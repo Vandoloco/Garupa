@@ -29,11 +29,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var testeImagem: TesteImagem
 
     /*
-     * TESTE TEMPORÁRIO
+     * MODO DE TESTE OFFLINE
      *
-     * Abre a galeria para escolher uma print.
-     * Depois a imagem é enviada para o mesmo OCR
-     * utilizado pelo Garupa.
+     * Permite escolher uma print salva no celular
+     * e enviar essa imagem para o OCR do Garupa.
      */
     private val selecionarImagemTeste =
         registerForActivityResult(
@@ -47,7 +46,9 @@ class MainActivity : ComponentActivity() {
                     "🧪 Print selecionada"
                 )
 
-                testeImagem.analisarImagem(uri)
+                testeImagem.analisarImagem(
+                    uri
+                )
 
             } else {
 
@@ -59,7 +60,8 @@ class MainActivity : ComponentActivity() {
         }
 
     /*
-     * Permissão de localização.
+     * Permissão para acessar a localização
+     * atual do piloto.
      */
     private val pedidoLocalizacao =
         registerForActivityResult(
@@ -100,7 +102,8 @@ class MainActivity : ComponentActivity() {
         }
 
     /*
-     * Autorização para captura da tela inteira.
+     * Autorização oficial do Android
+     * para captura da tela inteira.
      */
     private val pedidoCapturaTela =
         registerForActivityResult(
@@ -153,10 +156,6 @@ class MainActivity : ComponentActivity() {
                     "📸 Autorização enviada para o serviço de captura"
                 )
 
-                /*
-                 * Depois da autorização,
-                 * abre a galeria para o teste offline.
-                 */
                 abrirGaleriaTeste()
 
             } else {
@@ -167,8 +166,9 @@ class MainActivity : ComponentActivity() {
                 )
 
                 /*
-                 * Mesmo sem captura,
-                 * ainda podemos testar uma print.
+                 * Mesmo sem captura contínua,
+                 * ainda podemos testar prints
+                 * salvas no celular.
                  */
                 abrirGaleriaTeste()
             }
@@ -178,24 +178,31 @@ class MainActivity : ComponentActivity() {
         savedInstanceState: Bundle?
     ) {
 
-        super.onCreate(savedInstanceState)
+        super.onCreate(
+            savedInstanceState
+        )
 
         /*
-         * Inicia o Garupa.
+         * Inicializa o núcleo do Garupa.
          */
-        Garupa.iniciar(this)
+        Garupa.iniciar(
+            this
+        )
 
-        /*
-         * Componentes principais.
-         */
         capturaTela =
-            CapturaTela(this)
+            CapturaTela(
+                this
+            )
 
         gerenciadorLocalizacao =
-            GerenciadorLocalizacao(this)
+            GerenciadorLocalizacao(
+                this
+            )
 
         testeImagem =
-            TesteImagem(this)
+            TesteImagem(
+                this
+            )
 
         enableEdgeToEdge()
 
@@ -218,13 +225,15 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /*
+         * Primeiro obtemos o ponto A.
+         *
+         * Depois o aplicativo segue
+         * normalmente para a captura.
+         */
         verificarPermissaoLocalizacao()
     }
 
-    /*
-     * Verifica se o piloto já autorizou
-     * o acesso à localização.
-     */
     private fun verificarPermissaoLocalizacao() {
 
         val fine =
@@ -259,16 +268,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /*
-     * Obtém o ponto A:
-     * posição atual do piloto.
-     */
     private fun obterLocalizacaoPiloto() {
 
         gerenciadorLocalizacao
             .obterUltimaLocalizacao { localizacao ->
 
-                if (localizacao != null) {
+                if (
+                    localizacao != null
+                ) {
 
                     Log.d(
                         "GARUPA_LOCALIZACAO",
@@ -287,9 +294,6 @@ class MainActivity : ComponentActivity() {
             }
     }
 
-    /*
-     * Solicita captura da tela inteira.
-     */
     private fun iniciarPedidoCaptura() {
 
         pedidoCapturaTela.launch(
@@ -297,10 +301,6 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    /*
-     * Abre a galeria somente para
-     * nosso modo de desenvolvimento/teste.
-     */
     private fun abrirGaleriaTeste() {
 
         Log.d(
