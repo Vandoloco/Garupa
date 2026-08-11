@@ -3,6 +3,7 @@ package br.com.garupa.app.core.leitura
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import br.com.garupa.app.core.parser.ParserKeeta
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -16,6 +17,9 @@ class LeitorTela(
         TextRecognition.getClient(
             TextRecognizerOptions.DEFAULT_OPTIONS
         )
+
+    private val parserKeeta =
+        ParserKeeta()
 
     fun lerImagem(caminhoImagem: String) {
 
@@ -45,10 +49,7 @@ class LeitorTela(
                 .process(imagem)
                 .addOnSuccessListener { resultado ->
 
-                    val textoReconhecido =
-                        resultado.text.trim()
-
-                    if (textoReconhecido.isEmpty()) {
+                    if (resultado.text.isBlank()) {
 
                         Log.d(
                             "GARUPA_OCR",
@@ -58,13 +59,35 @@ class LeitorTela(
                         return@addOnSuccessListener
                     }
 
-                    Log.d(
-                        "GARUPA_OCR",
-                        "👁️ Texto reconhecido:\n$textoReconhecido"
+                    val linhasOcr =
+                        resultado.textBlocks
+                            .flatMap { bloco ->
+                                bloco.lines
+                            }
+                            .mapNotNull { linha ->
+
+                                val caixa =
+                                    linha.boundingBox
+                                        ?: return@mapNotNull null
+
+                                LinhaOcr(
+                                    texto = linha.text.trim(),
+                                    x = caixa.left,
+                                    y = caixa.top,
+                                    largura = caixa.width(),
+                                    altura = caixa.height()
+                                )
+                            }
+                            .sortedBy { linha ->
+                                linha.y
+                            }
+
+                    registrarPosicoes(
+                        linhasOcr
                     )
 
-                    analisarTexto(
-                        textoReconhecido
+                    parserKeeta.analisar(
+                        linhasOcr
                     )
                 }
                 .addOnFailureListener { erro ->
@@ -86,54 +109,23 @@ class LeitorTela(
         }
     }
 
-    private fun analisarTexto(
-        texto: String
+    private fun registrarPosicoes(
+        linhas: List<LinhaOcr>
     ) {
 
-        val regexValor =
-            Regex(
-                """R\$\s*(\d+[.,]\d{2})"""
-            )
+        val texto =
+            linhas.joinToString("\n") { linha ->
 
-        val regexDistancia =
-            Regex(
-                """(\d+[.,]\d+)\s*km"""
-            )
+                "x=${linha.x} " +
+                        "y=${linha.y} " +
+                        "w=${linha.largura} " +
+                        "h=${linha.altura} " +
+                        "| ${linha.texto}"
+            }
 
-        val valorEncontrado =
-            regexValor
-                .find(texto)
-                ?.groupValues
-                ?.get(1)
-                ?.replace(",", ".")
-                ?.toDoubleOrNull()
-
-        val distanciaEncontrada =
-            regexDistancia
-                .find(texto)
-                ?.groupValues
-                ?.get(1)
-                ?.replace(",", ".")
-                ?.toDoubleOrNull()
-
-        if (
-            valorEncontrado != null &&
-            distanciaEncontrada != null
-        ) {
-
-            Log.d(
-                "GARUPA_PEDIDO",
-                "📦 Oferta detectada | " +
-                        "Valor: R$ %.2f | ".format(valorEncontrado) +
-                        "Distância: %.1f km".format(distanciaEncontrada)
-            )
-
-        } else {
-
-            Log.d(
-                "GARUPA_PEDIDO",
-                "📦 Nenhuma oferta completa detectada"
-            )
-        }
+        Log.d(
+            "GARUPA_OCR_POSICAO",
+            "\n$texto"
+        )
     }
 }

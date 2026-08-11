@@ -5,6 +5,7 @@ plugins {
 
 android {
     namespace = "br.com.garupa.app"
+
     compileSdk {
         version = release(37)
     }
@@ -48,7 +49,11 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
 
+    // OCR - leitura dos pedidos na tela
     implementation("com.google.mlkit:text-recognition:16.0.1")
+
+    // Localização atual do piloto
+    implementation("com.google.android.gms:play-services-location:21.3.0")
 
     testImplementation(libs.junit)
 
