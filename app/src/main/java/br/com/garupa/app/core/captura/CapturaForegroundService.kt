@@ -20,6 +20,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import br.com.garupa.app.core.leitura.LeitorTela
+import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
 import java.io.File
 import java.io.FileOutputStream
 
@@ -33,8 +34,15 @@ class CapturaForegroundService : Service() {
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
 
-        // Intervalo inicial para testes.
         const val INTERVALO_CAPTURA_MS = 1200L
+
+        @Volatile
+        var capturaAtiva: Boolean = false
+            private set
+
+        @Volatile
+        var precisaNovaAutorizacao: Boolean = false
+            private set
     }
 
     private var mediaProjection: MediaProjection? = null
@@ -43,7 +51,15 @@ class CapturaForegroundService : Service() {
 
     private lateinit var handlerThread: HandlerThread
     private lateinit var handler: Handler
+
     private lateinit var leitorTela: LeitorTela
+
+    /*
+     * Agora a localização do piloto também
+     * pertence ao Foreground Service.
+     */
+    private lateinit var gerenciadorLocalizacao:
+            GerenciadorLocalizacao
 
     private var ultimoFrameProcessado = 0L
 
@@ -53,57 +69,82 @@ class CapturaForegroundService : Service() {
             override fun onStop() {
 
                 Log.d(
-                    "GARUPA",
-                    "📸 Captura de tela encerrada"
+                    "GARUPA_CAPTURA",
+                    "🛑 MediaProjection encerrado pelo Android"
                 )
 
-                liberarCaptura()
+                capturaAtiva = false
+                precisaNovaAutorizacao = true
+
+                liberarRecursosCaptura(
+                    liberarProjection = false
+                )
+
+                /*
+                 * Importante:
+                 *
+                 * A captura pode terminar,
+                 * mas não paramos automaticamente
+                 * a localização aqui.
+                 *
+                 * Enquanto o serviço estiver vivo,
+                 * o Garupa continua acompanhando A.
+                 */
+
+                Log.d(
+                    "GARUPA_CAPTURA",
+                    "⚠️ Nova autorização de captura será necessária"
+                )
             }
         }
 
     override fun onCreate() {
         super.onCreate()
 
-        leitorTela = LeitorTela(this)
+        /*
+         * OCR / Parser / memória da oferta.
+         */
+        leitorTela =
+            LeitorTela(
+                this
+            )
+
+        /*
+         * Localização contínua do piloto.
+         */
+        gerenciadorLocalizacao =
+            GerenciadorLocalizacao(
+                this
+            )
 
         criarCanalNotificacao()
 
-        val notificacao =
-            NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Garupa ativo")
-                .setContentText("Observando a tela para analisar pedidos")
-                .setSmallIcon(android.R.drawable.ic_menu_view)
-                .setOngoing(true)
-                .build()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-
-            startForeground(
-                NOTIFICATION_ID,
-                notificacao,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-
-        } else {
-
-            startForeground(
-                NOTIFICATION_ID,
-                notificacao
-            )
-        }
+        iniciarForeground()
 
         handlerThread =
-            HandlerThread("GarupaCapturaThread")
+            HandlerThread(
+                "GarupaCapturaThread"
+            )
 
         handlerThread.start()
 
         handler =
-            Handler(handlerThread.looper)
+            Handler(
+                handlerThread.looper
+            )
 
         Log.d(
-            "GARUPA",
+            "GARUPA_CAPTURA",
             "📸 Serviço de captura iniciado"
         )
+
+        /*
+         * A partir daqui o ponto A passa
+         * a ser acompanhado pelo serviço,
+         * e não depende mais da MainActivity
+         * permanecer visível.
+         */
+        iniciarLocalizacaoContinua()
     }
 
     override fun onStartCommand(
@@ -119,7 +160,10 @@ class CapturaForegroundService : Service() {
             ) ?: Activity.RESULT_CANCELED
 
         val resultData: Intent? =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.TIRAMISU
+            ) {
 
                 intent?.getParcelableExtra(
                     EXTRA_RESULT_DATA,
@@ -135,14 +179,113 @@ class CapturaForegroundService : Service() {
             }
 
         if (
-            resultCode == Activity.RESULT_OK &&
-            resultData != null &&
-            mediaProjection == null
+            resultCode != Activity.RESULT_OK ||
+            resultData == null
         ) {
 
+            Log.d(
+                "GARUPA_CAPTURA",
+                "⚠️ Serviço iniciado sem autorização válida"
+            )
+
+            return START_NOT_STICKY
+        }
+
+        if (mediaProjection != null) {
+
+            Log.d(
+                "GARUPA_CAPTURA",
+                "ℹ️ Já existe uma sessão de captura ativa"
+            )
+
+            return START_NOT_STICKY
+        }
+
+        iniciarNovaSessao(
+            resultCode =
+                resultCode,
+
+            resultData =
+                resultData
+        )
+
+        return START_NOT_STICKY
+    }
+
+    /*
+     * =========================================================
+     * LOCALIZAÇÃO CONTÍNUA DO PILOTO
+     * =========================================================
+     */
+
+    private fun iniciarLocalizacaoContinua() {
+
+        try {
+
+            Log.d(
+                "GARUPA_LOCALIZACAO",
+                "🏍️ Foreground Service ativando localização contínua"
+            )
+
+            gerenciadorLocalizacao
+                .iniciarAtualizacoes()
+
+        } catch (erro: Exception) {
+
+            Log.e(
+                "GARUPA_LOCALIZACAO",
+                "❌ Erro ao iniciar localização no serviço",
+                erro
+            )
+        }
+    }
+
+    private fun pararLocalizacaoContinua() {
+
+        if (
+            !::gerenciadorLocalizacao.isInitialized
+        ) {
+
+            return
+        }
+
+        try {
+
+            gerenciadorLocalizacao
+                .pararAtualizacoes()
+
+            Log.d(
+                "GARUPA_LOCALIZACAO",
+                "🔴 Foreground Service parou localização contínua"
+            )
+
+        } catch (erro: Exception) {
+
+            Log.e(
+                "GARUPA_LOCALIZACAO",
+                "❌ Erro ao parar localização no serviço",
+                erro
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * MEDIA PROJECTION
+     * =========================================================
+     */
+
+    private fun iniciarNovaSessao(
+        resultCode: Int,
+        resultData: Intent
+    ) {
+
+        try {
+
             val manager =
-                getSystemService(MEDIA_PROJECTION_SERVICE)
-                        as MediaProjectionManager
+                getSystemService(
+                    MEDIA_PROJECTION_SERVICE
+                ) as MediaProjectionManager
 
             mediaProjection =
                 manager.getMediaProjection(
@@ -150,29 +293,52 @@ class CapturaForegroundService : Service() {
                     resultData
                 )
 
-            mediaProjection?.registerCallback(
-                projectionCallback,
-                handler
-            )
+            mediaProjection
+                ?.registerCallback(
+                    projectionCallback,
+                    handler
+                )
+
+            capturaAtiva = true
+            precisaNovaAutorizacao = false
+
+            ultimoFrameProcessado = 0L
 
             Log.d(
-                "GARUPA",
-                "📸 MediaProjection criado com sucesso"
+                "GARUPA_CAPTURA",
+                "✅ Nova sessão MediaProjection criada"
             )
 
             iniciarCaptura()
-        }
 
-        return START_NOT_STICKY
+        } catch (erro: Exception) {
+
+            capturaAtiva = false
+            precisaNovaAutorizacao = true
+
+            Log.e(
+                "GARUPA_CAPTURA",
+                "❌ Erro ao iniciar MediaProjection",
+                erro
+            )
+        }
     }
 
     private fun iniciarCaptura() {
 
-        val metricas = resources.displayMetrics
+        val metricas =
+            resources.displayMetrics
 
-        val largura = metricas.widthPixels
-        val altura = metricas.heightPixels
-        val densidade = resources.configuration.densityDpi
+        val largura =
+            metricas.widthPixels
+
+        val altura =
+            metricas.heightPixels
+
+        val densidade =
+            resources.configuration.densityDpi
+
+        liberarImageReaderEVirtualDisplay()
 
         imageReader =
             ImageReader.newInstance(
@@ -182,100 +348,156 @@ class CapturaForegroundService : Service() {
                 2
             )
 
-        imageReader?.setOnImageAvailableListener(
-            { reader ->
+        imageReader
+            ?.setOnImageAvailableListener(
+                { reader ->
 
-                val agora = System.currentTimeMillis()
+                    if (!capturaAtiva) {
 
-                if (
-                    agora - ultimoFrameProcessado <
-                    INTERVALO_CAPTURA_MS
-                ) {
+                        reader
+                            .acquireLatestImage()
+                            ?.close()
 
-                    val imagemIgnorada =
+                        return@setOnImageAvailableListener
+                    }
+
+                    val agora =
+                        System.currentTimeMillis()
+
+                    if (
+                        agora -
+                        ultimoFrameProcessado <
+                        INTERVALO_CAPTURA_MS
+                    ) {
+
+                        reader
+                            .acquireLatestImage()
+                            ?.close()
+
+                        return@setOnImageAvailableListener
+                    }
+
+                    val image =
                         reader.acquireLatestImage()
+                            ?: return@setOnImageAvailableListener
 
-                    imagemIgnorada?.close()
+                    ultimoFrameProcessado =
+                        agora
 
-                    return@setOnImageAvailableListener
-                }
+                    try {
 
-                val image =
-                    reader.acquireLatestImage()
-                        ?: return@setOnImageAvailableListener
+                        val plane =
+                            image.planes[0]
 
-                ultimoFrameProcessado = agora
+                        val buffer =
+                            plane.buffer
 
-                try {
+                        val pixelStride =
+                            plane.pixelStride
 
-                    val plane = image.planes[0]
-                    val buffer = plane.buffer
+                        val rowStride =
+                            plane.rowStride
 
-                    val pixelStride = plane.pixelStride
-                    val rowStride = plane.rowStride
+                        val rowPadding =
+                            rowStride -
+                                    pixelStride *
+                                    largura
 
-                    val rowPadding =
-                        rowStride - pixelStride * largura
+                        val bitmapCompleto =
+                            Bitmap.createBitmap(
+                                largura +
+                                        rowPadding /
+                                        pixelStride,
+                                altura,
+                                Bitmap.Config.ARGB_8888
+                            )
 
-                    val bitmapCompleto =
-                        Bitmap.createBitmap(
-                            largura + rowPadding / pixelStride,
-                            altura,
-                            Bitmap.Config.ARGB_8888
+                        bitmapCompleto
+                            .copyPixelsFromBuffer(
+                                buffer
+                            )
+
+                        val bitmapFinal =
+                            Bitmap.createBitmap(
+                                bitmapCompleto,
+                                0,
+                                0,
+                                largura,
+                                altura
+                            )
+
+                        bitmapCompleto.recycle()
+
+                        salvarFrame(
+                            bitmapFinal
                         )
 
-                    bitmapCompleto.copyPixelsFromBuffer(
-                        buffer
-                    )
+                        bitmapFinal.recycle()
 
-                    val bitmapFinal =
-                        Bitmap.createBitmap(
-                            bitmapCompleto,
-                            0,
-                            0,
-                            largura,
-                            altura
+                    } catch (erro: Exception) {
+
+                        Log.e(
+                            "GARUPA_CAPTURA",
+                            "❌ Erro ao processar frame",
+                            erro
                         )
 
-                    bitmapCompleto.recycle()
+                    } finally {
 
-                    salvarFrame(bitmapFinal)
+                        image.close()
+                    }
 
-                    bitmapFinal.recycle()
-
-                } catch (e: Exception) {
-
-                    Log.e(
-                        "GARUPA",
-                        "📸 Erro ao capturar frame",
-                        e
-                    )
-
-                } finally {
-
-                    image.close()
-                }
-
-            },
-            handler
-        )
-
-        virtualDisplay =
-            mediaProjection?.createVirtualDisplay(
-                "GarupaCaptura",
-                largura,
-                altura,
-                densidade,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader?.surface,
-                null,
+                },
                 handler
             )
 
-        Log.d(
-            "GARUPA",
-            "📸 Captura contínua iniciada"
-        )
+        try {
+
+            virtualDisplay =
+                mediaProjection
+                    ?.createVirtualDisplay(
+                        "GarupaCaptura",
+                        largura,
+                        altura,
+                        densidade,
+                        DisplayManager
+                            .VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                        imageReader?.surface,
+                        null,
+                        handler
+                    )
+
+            if (
+                virtualDisplay != null
+            ) {
+
+                Log.d(
+                    "GARUPA_CAPTURA",
+                    "📸 Captura contínua iniciada"
+                )
+
+            } else {
+
+                capturaAtiva = false
+                precisaNovaAutorizacao = true
+
+                Log.e(
+                    "GARUPA_CAPTURA",
+                    "❌ VirtualDisplay não foi criado"
+                )
+            }
+
+        } catch (erro: Exception) {
+
+            capturaAtiva = false
+            precisaNovaAutorizacao = true
+
+            Log.e(
+                "GARUPA_CAPTURA",
+                "❌ Erro ao criar VirtualDisplay",
+                erro
+            )
+        }
     }
 
     private fun salvarFrame(
@@ -288,7 +510,9 @@ class CapturaForegroundService : Service() {
                 "garupa_tela.png"
             )
 
-        FileOutputStream(arquivo).use { output ->
+        FileOutputStream(
+            arquivo
+        ).use { output ->
 
             bitmap.compress(
                 Bitmap.CompressFormat.PNG,
@@ -298,7 +522,7 @@ class CapturaForegroundService : Service() {
         }
 
         Log.d(
-            "GARUPA",
+            "GARUPA_CAPTURA",
             "📸 Novo frame capturado"
         )
 
@@ -307,26 +531,139 @@ class CapturaForegroundService : Service() {
         )
     }
 
-    private fun liberarCaptura() {
+    /*
+     * =========================================================
+     * LIBERAÇÃO DE RECURSOS
+     * =========================================================
+     */
 
-        virtualDisplay?.release()
+    private fun liberarImageReaderEVirtualDisplay() {
+
+        try {
+
+            virtualDisplay?.release()
+
+        } catch (_: Exception) {
+        }
+
         virtualDisplay = null
 
-        imageReader?.close()
-        imageReader = null
+        try {
 
-        mediaProjection = null
+            imageReader?.close()
+
+        } catch (_: Exception) {
+        }
+
+        imageReader = null
+    }
+
+    private fun liberarRecursosCaptura(
+        liberarProjection: Boolean
+    ) {
+
+        liberarImageReaderEVirtualDisplay()
+
+        if (
+            liberarProjection
+        ) {
+
+            try {
+
+                mediaProjection
+                    ?.unregisterCallback(
+                        projectionCallback
+                    )
+
+            } catch (_: Exception) {
+            }
+
+            try {
+
+                mediaProjection
+                    ?.stop()
+
+            } catch (_: Exception) {
+            }
+        }
+
+        mediaProjection =
+            null
+    }
+
+    /*
+     * =========================================================
+     * FOREGROUND SERVICE
+     * =========================================================
+     */
+
+    private fun iniciarForeground() {
+
+        val notificacao =
+            NotificationCompat
+                .Builder(
+                    this,
+                    CHANNEL_ID
+                )
+                .setContentTitle(
+                    "Garupa ativo"
+                )
+                .setContentText(
+                    "Analisando ofertas e acompanhando sua posição"
+                )
+                .setSmallIcon(
+                    android.R.drawable.ic_menu_mylocation
+                )
+                .setOngoing(
+                    true
+                )
+                .build()
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.Q
+        ) {
+
+            /*
+             * O mesmo serviço agora declara:
+             *
+             * - mediaProjection
+             * - location
+             */
+            val tipos =
+                ServiceInfo
+                    .FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                        ServiceInfo
+                            .FOREGROUND_SERVICE_TYPE_LOCATION
+
+            startForeground(
+                NOTIFICATION_ID,
+                notificacao,
+                tipos
+            )
+
+        } else {
+
+            startForeground(
+                NOTIFICATION_ID,
+                notificacao
+            )
+        }
     }
 
     private fun criarCanalNotificacao() {
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.O
+        ) {
 
             val canal =
                 NotificationChannel(
                     CHANNEL_ID,
-                    "Captura de tela do Garupa",
-                    NotificationManager.IMPORTANCE_LOW
+                    "Garupa ativo",
+                    NotificationManager
+                        .IMPORTANCE_LOW
                 )
 
             val manager =
@@ -334,9 +671,10 @@ class CapturaForegroundService : Service() {
                     NotificationManager::class.java
                 )
 
-            manager.createNotificationChannel(
-                canal
-            )
+            manager
+                .createNotificationChannel(
+                    canal
+                )
         }
     }
 
@@ -349,13 +687,31 @@ class CapturaForegroundService : Service() {
 
     override fun onDestroy() {
 
-        mediaProjection?.stop()
+        capturaAtiva =
+            false
 
-        liberarCaptura()
+        /*
+         * Agora o serviço é dono também
+         * da atualização de A.
+         */
+        pararLocalizacaoContinua()
 
-        if (::handlerThread.isInitialized) {
+        liberarRecursosCaptura(
+            liberarProjection =
+                true
+        )
+
+        if (
+            ::handlerThread.isInitialized
+        ) {
+
             handlerThread.quitSafely()
         }
+
+        Log.d(
+            "GARUPA_CAPTURA",
+            "📴 Foreground Service destruído"
+        )
 
         super.onDestroy()
     }

@@ -25,15 +25,13 @@ import br.com.garupa.app.ui.theme.GarupaTheme
 class MainActivity : ComponentActivity() {
 
     private lateinit var capturaTela: CapturaTela
-    private lateinit var gerenciadorLocalizacao: GerenciadorLocalizacao
-    private lateinit var testeImagem: TesteImagem
 
-    /*
-     * MODO DE TESTE OFFLINE
-     *
-     * Permite escolher uma print salva no celular
-     * e enviar essa imagem para o OCR do Garupa.
-     */
+    private lateinit var gerenciadorLocalizacao:
+            GerenciadorLocalizacao
+
+    private lateinit var testeImagem:
+            TesteImagem
+
     private val selecionarImagemTeste =
         registerForActivityResult(
             ActivityResultContracts.GetContent()
@@ -59,10 +57,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    /*
-     * Permissão para acessar a localização
-     * atual do piloto.
-     */
     private val pedidoLocalizacao =
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
@@ -94,17 +88,13 @@ class MainActivity : ComponentActivity() {
 
                 Log.d(
                     "GARUPA_LOCALIZACAO",
-                    "📍 Permissão de localização não concedida"
+                    "❌ Permissão de localização não concedida"
                 )
 
                 iniciarPedidoCaptura()
             }
         }
 
-    /*
-     * Autorização oficial do Android
-     * para captura da tela inteira.
-     */
     private val pedidoCapturaTela =
         registerForActivityResult(
             ActivityResultContracts.StartActivityForResult()
@@ -165,11 +155,6 @@ class MainActivity : ComponentActivity() {
                     "📸 Captura de tela não autorizada"
                 )
 
-                /*
-                 * Mesmo sem captura contínua,
-                 * ainda podemos testar prints
-                 * salvas no celular.
-                 */
                 abrirGaleriaTeste()
             }
         }
@@ -182,9 +167,6 @@ class MainActivity : ComponentActivity() {
             savedInstanceState
         )
 
-        /*
-         * Inicializa o núcleo do Garupa.
-         */
         Garupa.iniciar(
             this
         )
@@ -225,12 +207,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        /*
-         * Primeiro obtemos o ponto A.
-         *
-         * Depois o aplicativo segue
-         * normalmente para a captura.
-         */
         verificarPermissaoLocalizacao()
     }
 
@@ -255,6 +231,12 @@ class MainActivity : ComponentActivity() {
             PackageManager.PERMISSION_GRANTED
         ) {
 
+            /*
+             * Aqui pegamos apenas uma posição inicial.
+             *
+             * O acompanhamento contínuo será iniciado
+             * pelo CapturaForegroundService.
+             */
             obterLocalizacaoPiloto()
 
         } else {
@@ -279,14 +261,16 @@ class MainActivity : ComponentActivity() {
 
                     Log.d(
                         "GARUPA_LOCALIZACAO",
-                        "📍 Localização recebida com sucesso"
+                        "✅ Ponto A inicial disponível: " +
+                                "${localizacao.latitude}, " +
+                                "${localizacao.longitude}"
                     )
 
                 } else {
 
                     Log.d(
                         "GARUPA_LOCALIZACAO",
-                        "📍 Não foi possível obter a localização"
+                        "⚠️ Ponto A inicial ainda indisponível"
                     )
                 }
 
