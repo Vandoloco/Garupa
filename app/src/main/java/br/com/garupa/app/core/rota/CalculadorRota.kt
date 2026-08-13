@@ -18,8 +18,34 @@ data class ResultadoRota(
     val tempoBCSegundos: Double
 )
 
+/*
+ * Resultado genérico para rotas com
+ * qualquer quantidade de paradas.
+ */
+data class TrechoRota(
+    val indiceOrigem: Int,
+    val indiceDestino: Int,
+    val distanciaKm: Double,
+    val tempoSegundos: Double
+)
+
+data class ResultadoRotaMultipla(
+    val trechos: List<TrechoRota>,
+    val distanciaTotalKm: Double,
+    val tempoTotalSegundos: Double
+)
+
 class CalculadorRota {
 
+    /*
+     * =========================================================
+     * MÉTODO ANTIGO
+     *
+     * Mantido para não quebrar o fluxo atual:
+     *
+     * A → B → C
+     * =========================================================
+     */
     fun calcularABC(
         pontoA: CoordenadaRota,
         pontoB: CoordenadaRota,
@@ -27,85 +53,260 @@ class CalculadorRota {
         aoCalcular: (ResultadoRota?) -> Unit
     ) {
 
+        calcularMultiplaParada(
+            pontoInicial =
+                pontoA,
+
+            paradas =
+                listOf(
+                    pontoB,
+                    pontoC
+                )
+        ) { resultadoMultiplo ->
+
+            if (
+                resultadoMultiplo == null ||
+                resultadoMultiplo.trechos.size < 2
+            ) {
+
+                Log.e(
+                    "GARUPA_ROTA",
+                    "❌ Não foi possível calcular A → B → C"
+                )
+
+                aoCalcular(
+                    null
+                )
+
+                return@calcularMultiplaParada
+            }
+
+            val trechoAB =
+                resultadoMultiplo.trechos[0]
+
+            val trechoBC =
+                resultadoMultiplo.trechos[1]
+
+            val resultado =
+                ResultadoRota(
+                    distanciaABKm =
+                        trechoAB.distanciaKm,
+
+                    distanciaBCKm =
+                        trechoBC.distanciaKm,
+
+                    distanciaTotalKm =
+                        resultadoMultiplo.distanciaTotalKm,
+
+                    tempoABSegundos =
+                        trechoAB.tempoSegundos,
+
+                    tempoBCSegundos =
+                        trechoBC.tempoSegundos
+                )
+
+            Log.d(
+                "GARUPA_ROTA",
+                "🏍️ A → B = %.2f km".format(
+                    resultado.distanciaABKm
+                )
+            )
+
+            Log.d(
+                "GARUPA_ROTA",
+                "🏍️ B → C = %.2f km".format(
+                    resultado.distanciaBCKm
+                )
+            )
+
+            Log.d(
+                "GARUPA_ROTA",
+                "🛣️ Total A → B → C = %.2f km".format(
+                    resultado.distanciaTotalKm
+                )
+            )
+
+            aoCalcular(
+                resultado
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * NOVO MÉTODO
+     *
+     * pontoInicial = posição atual do piloto A
+     *
+     * paradas =
+     * [
+     *   coleta,
+     *   entrega 1,
+     *   entrega 2,
+     *   ...
+     * ]
+     *
+     * Exemplo:
+     *
+     * A → B → C1 → C2
+     * =========================================================
+     */
+    fun calcularMultiplaParada(
+        pontoInicial: CoordenadaRota,
+        paradas: List<CoordenadaRota>,
+        aoCalcular: (ResultadoRotaMultipla?) -> Unit
+    ) {
+
+        if (
+            paradas.isEmpty()
+        ) {
+
+            Log.e(
+                "GARUPA_ROTA_MULTI",
+                "❌ Nenhuma parada informada"
+            )
+
+            aoCalcular(
+                null
+            )
+
+            return
+        }
+
         Thread {
 
             try {
 
-                val rotaAB =
-                    calcularTrecho(
-                        origem = pontoA,
-                        destino = pontoB
+                /*
+                 * Montamos a sequência completa:
+                 *
+                 * índice 0 = piloto A
+                 * índice 1 = primeira parada
+                 * índice 2 = segunda parada
+                 * ...
+                 */
+                val pontos =
+                    mutableListOf<CoordenadaRota>()
+
+                pontos.add(
+                    pontoInicial
+                )
+
+                pontos.addAll(
+                    paradas
+                )
+
+                val trechos =
+                    mutableListOf<TrechoRota>()
+
+                var distanciaTotal =
+                    0.0
+
+                var tempoTotal =
+                    0.0
+
+                for (
+                i in 0 until
+                        pontos.size - 1
+                ) {
+
+                    val origem =
+                        pontos[i]
+
+                    val destino =
+                        pontos[i + 1]
+
+                    Log.d(
+                        "GARUPA_ROTA_MULTI",
+                        "🧭 Calculando trecho ${i + 1}: " +
+                                "$i → ${i + 1}"
                     )
 
-                if (rotaAB == null) {
+                    val trecho =
+                        calcularTrecho(
+                            origem =
+                                origem,
 
-                    Log.e(
-                        "GARUPA_ROTA",
-                        "❌ Não foi possível calcular A → B"
+                            destino =
+                                destino
+                        )
+
+                    if (
+                        trecho == null
+                    ) {
+
+                        Log.e(
+                            "GARUPA_ROTA_MULTI",
+                            "❌ Falha no trecho " +
+                                    "${i + 1}/${pontos.size - 1}"
+                        )
+
+                        aoCalcular(
+                            null
+                        )
+
+                        return@Thread
+                    }
+
+                    val resultadoTrecho =
+                        TrechoRota(
+                            indiceOrigem =
+                                i,
+
+                            indiceDestino =
+                                i + 1,
+
+                            distanciaKm =
+                                trecho.first,
+
+                            tempoSegundos =
+                                trecho.second
+                        )
+
+                    trechos.add(
+                        resultadoTrecho
                     )
 
-                    aoCalcular(null)
-                    return@Thread
+                    distanciaTotal +=
+                        trecho.first
+
+                    tempoTotal +=
+                        trecho.second
+
+                    Log.d(
+                        "GARUPA_ROTA_MULTI",
+                        "✅ Trecho ${i + 1} | " +
+                                "%.2f km | ".format(
+                                    trecho.first
+                                ) +
+                                "%.0f s".format(
+                                    trecho.second
+                                )
+                    )
                 }
-
-                val rotaBC =
-                    calcularTrecho(
-                        origem = pontoB,
-                        destino = pontoC
-                    )
-
-                if (rotaBC == null) {
-
-                    Log.e(
-                        "GARUPA_ROTA",
-                        "❌ Não foi possível calcular B → C"
-                    )
-
-                    aoCalcular(null)
-                    return@Thread
-                }
-
-                val distanciaTotal =
-                    rotaAB.first +
-                            rotaBC.first
 
                 val resultado =
-                    ResultadoRota(
-                        distanciaABKm =
-                            rotaAB.first,
-
-                        distanciaBCKm =
-                            rotaBC.first,
+                    ResultadoRotaMultipla(
+                        trechos =
+                            trechos,
 
                         distanciaTotalKm =
                             distanciaTotal,
 
-                        tempoABSegundos =
-                            rotaAB.second,
-
-                        tempoBCSegundos =
-                            rotaBC.second
+                        tempoTotalSegundos =
+                            tempoTotal
                     )
 
                 Log.d(
-                    "GARUPA_ROTA",
-                    "🏍️ A → B = %.2f km".format(
-                        resultado.distanciaABKm
-                    )
-                )
-
-                Log.d(
-                    "GARUPA_ROTA",
-                    "🏍️ B → C = %.2f km".format(
-                        resultado.distanciaBCKm
-                    )
-                )
-
-                Log.d(
-                    "GARUPA_ROTA",
-                    "🛣️ Total A → B → C = %.2f km".format(
-                        resultado.distanciaTotalKm
-                    )
+                    "GARUPA_ROTA_MULTI",
+                    "🏁 Rota completa | " +
+                            "paradas=${paradas.size} | " +
+                            "distância=%.2f km | ".format(
+                                resultado.distanciaTotalKm
+                            ) +
+                            "tempo=%.0f s".format(
+                                resultado.tempoTotalSegundos
+                            )
                 )
 
                 aoCalcular(
@@ -115,23 +316,31 @@ class CalculadorRota {
             } catch (erro: Exception) {
 
                 Log.e(
-                    "GARUPA_ROTA",
-                    "❌ Erro ao calcular rota completa",
+                    "GARUPA_ROTA_MULTI",
+                    "❌ Erro ao calcular rota multiparada",
                     erro
                 )
 
-                aoCalcular(null)
+                aoCalcular(
+                    null
+                )
             }
 
         }.start()
     }
 
+    /*
+     * =========================================================
+     * CÁLCULO DE UM ÚNICO TRECHO
+     * =========================================================
+     */
     private fun calcularTrecho(
         origem: CoordenadaRota,
         destino: CoordenadaRota
     ): Pair<Double, Double>? {
 
-        var conexao: HttpURLConnection? = null
+        var conexao: HttpURLConnection? =
+            null
 
         return try {
 
@@ -273,7 +482,8 @@ class CalculadorRota {
 
         } finally {
 
-            conexao?.disconnect()
+            conexao
+                ?.disconnect()
         }
     }
 }

@@ -9,13 +9,23 @@ import br.com.garupa.app.core.geocodificacao.GeocodificadorEndereco
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
 import br.com.garupa.app.core.memoria.OfertaTemporaria
 import br.com.garupa.app.core.parser.ParserKeeta
+import br.com.garupa.app.core.parser.ParadaKeeta
+import br.com.garupa.app.core.parser.TipoParadaKeeta
 import br.com.garupa.app.core.rota.CalculadorRota
 import br.com.garupa.app.core.rota.CoordenadaRota
+import br.com.garupa.app.core.voz.Voz
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.text.Normalizer
+
+private data class IdentidadeOfertaGlobal(
+    val valor: Double,
+    val distanciaTela: Double,
+    val quantidadePedidos: Int?,
+    val paradas: List<ParadaKeeta>
+)
 
 class LeitorTela(
     private val contexto: Context
@@ -34,10 +44,31 @@ class LeitorTela(
         private val travaGlobal =
             Any()
 
-        private var assinaturaGlobalEmAnalise: String? =
+        private var identidadeGlobalEmAnalise: IdentidadeOfertaGlobal? =
             null
 
-        private var ultimaAssinaturaGlobalConcluida: String? =
+        private var ultimaIdentidadeGlobalConcluida: IdentidadeOfertaGlobal? =
+            null
+
+        private var horarioUltimaConclusaoGlobal: Long =
+            0L
+
+        /*
+         * A mesma oferta do Keeta costuma permanecer na tela
+         * por dezenas de segundos. Durante esta janela, pequenas
+         * variações do OCR não podem disparar uma nova análise.
+         *
+         * Depois da janela, uma oferta realmente nova com dados
+         * coincidentemente iguais volta a poder ser analisada.
+         */
+        private const val JANELA_DEDUP_GLOBAL_MS =
+            120_000L
+
+        private val travaVozGlobal =
+            Any()
+
+        @Volatile
+        private var vozGlobal: Voz? =
             null
     }
 
@@ -64,6 +95,20 @@ class LeitorTela(
 
     private val avaliadorOferta =
         AvaliadorOferta()
+
+    private val voz: Voz =
+        synchronized(
+            travaVozGlobal
+        ) {
+            vozGlobal
+                ?: Voz(
+                    contexto.applicationContext
+                ).also { novaVoz ->
+                    novaVoz.iniciar()
+                    vozGlobal =
+                        novaVoz
+                }
+        }
 
     /*
      * Memória local da oferta apresentada
@@ -110,7 +155,7 @@ class LeitorTela(
      * Guarda qual assinatura ESTA instância
      * conseguiu reservar globalmente.
      */
-    private var assinaturaReservada: String? =
+    private var identidadeReservada: IdentidadeOfertaGlobal? =
         null
 
     fun lerImagem(
@@ -212,7 +257,13 @@ class LeitorTela(
                             resultadoKeeta.coletaVisivel,
 
                         entregaVisivel =
-                            resultadoKeeta.entregaVisivel
+                            resultadoKeeta.entregaVisivel,
+
+                        quantidadePedidos =
+                            resultadoKeeta.quantidadePedidos,
+
+                        paradas =
+                            resultadoKeeta.paradas
                     )
 
                     tentarIniciarAnaliseCompleta()
@@ -243,7 +294,9 @@ class LeitorTela(
         enderecoColeta: String?,
         enderecoEntrega: String?,
         coletaVisivel: Boolean,
-        entregaVisivel: Boolean
+        entregaVisivel: Boolean,
+        quantidadePedidos: Int?,
+        paradas: List<ParadaKeeta>
     ) {
 
         val framePareceOfertaValida =
@@ -376,6 +429,15 @@ class LeitorTela(
                     ofertaTemporaria.enderecoEntrega =
                         enderecoEntrega
 
+                    if (quantidadePedidos != null) {
+                        ofertaTemporaria.quantidadePedidos =
+                            quantidadePedidos
+                    }
+
+                    acumularParadas(
+                        paradas
+                    )
+
                     atualizarEstadoCompleto()
 
                 } else {
@@ -445,20 +507,540 @@ class LeitorTela(
                 )
         }
 
+        if (quantidadePedidos != null) {
+
+            ofertaTemporaria.quantidadePedidos =
+                quantidadePedidos
+        }
+
+        /*
+         * Acumula as paradas válidas encontradas
+         * nos diferentes frames da mesma oferta.
+         */
+        acumularParadas(
+            paradas
+        )
+
         atualizarEstadoCompleto()
+    }
+
+    private fun acumularParadas(
+        novasParadas: List<ParadaKeeta>
+    ) {
+
+        if (novasParadas.isEmpty()) {
+            return
+        }
+
+        /*
+         * IMPORTANTE:
+         *
+         * Não tratamos "endereço" como uma chave única.
+         * Uma oferta agrupada pode realmente possuir duas
+         * entregas no mesmo endereço.
+         *
+         * Em vez disso, cada frame é reconciliado com a memória:
+         * uma parada existente só pode ser usada UMA VEZ naquele
+         * frame. Assim:
+         *
+         * frame 1: C1
+         * frame 2: C1 + C1  -> memória passa a ter 2 entregas
+         * frame 3: C1 + C1  -> continua com 2, sem virar 4
+         *
+         * Pequenas diferenças do OCR são comparadas por similaridade.
+         */
+        val indicesUsadosNesteFrame =
+            mutableSetOf<Int>()
+
+        novasParadas.forEach { novaParada ->
+
+            val enderecoNovo =
+                normalizar(
+                    novaParada.endereco
+                )
+
+            if (enderecoNovo.isBlank()) {
+                return@forEach
+            }
+
+            val indiceCompativel =
+                ofertaTemporaria.paradas
+                    .indices
+                    .firstOrNull { indice ->
+
+                        if (
+                            indice in
+                            indicesUsadosNesteFrame
+                        ) {
+                            return@firstOrNull false
+                        }
+
+                        val existente =
+                            ofertaTemporaria.paradas[
+                                indice
+                            ]
+
+                        existente.tipo ==
+                                novaParada.tipo &&
+                                paradasSaoMesmaParada(
+                                    existente,
+                                    novaParada
+                                )
+                    }
+
+            if (indiceCompativel != null) {
+
+                indicesUsadosNesteFrame.add(
+                    indiceCompativel
+                )
+
+                /*
+                 * Se a leitura nova estiver mais completa,
+                 * substitui a versão antiga da mesma parada.
+                 */
+                val existente =
+                    ofertaTemporaria.paradas[
+                        indiceCompativel
+                    ]
+
+                ofertaTemporaria.paradas[
+                    indiceCompativel
+                ] = escolherMelhorParada(
+                    existente,
+                    novaParada
+                )
+
+                return@forEach
+            }
+
+            /*
+             * Quando o Keeta informa a quantidade de pedidos,
+             * usamos esse número também como proteção contra
+             * falsos positivos do OCR.
+             *
+             * Duas entregas reais no MESMO endereço continuam
+             * permitidas, desde que tenham aparecido como duas
+             * ocorrências no mesmo frame.
+             */
+            val limiteDoTipo =
+                ofertaTemporaria.quantidadePedidos
+                    ?.takeIf {
+                        it > 0
+                    }
+
+            val quantidadeAtualDoTipo =
+                ofertaTemporaria.paradas
+                    .count {
+                        it.tipo ==
+                                novaParada.tipo
+                    }
+
+            if (
+                limiteDoTipo != null &&
+                quantidadeAtualDoTipo >=
+                limiteDoTipo
+            ) {
+
+                Log.d(
+                    "GARUPA_MEMORIA_PARADAS",
+                    "🧹 ${novaParada.tipo} extra ignorada " +
+                            "(limite=$limiteDoTipo) | " +
+                            novaParada.endereco
+                )
+
+                return@forEach
+            }
+
+            ofertaTemporaria.paradas.add(
+                novaParada
+            )
+
+            val novoIndice =
+                ofertaTemporaria.paradas
+                    .lastIndex
+
+            indicesUsadosNesteFrame.add(
+                novoIndice
+            )
+
+            Log.d(
+                "GARUPA_MEMORIA_PARADAS",
+                "➕ ${novaParada.tipo} adicionada | " +
+                        novaParada.endereco
+            )
+        }
+
+        val coletas =
+            ofertaTemporaria.paradas
+                .count {
+                    it.tipo ==
+                            TipoParadaKeeta.COLETA
+                }
+
+        val entregas =
+            ofertaTemporaria.paradas
+                .count {
+                    it.tipo ==
+                            TipoParadaKeeta.ENTREGA
+                }
+
+        Log.d(
+            "GARUPA_MEMORIA_PARADAS",
+            "📚 Memória | " +
+                    "coletas=$coletas | " +
+                    "entregas=$entregas | " +
+                    "pedidos=${ofertaTemporaria.quantidadePedidos}"
+        )
+    }
+
+    private fun paradasSaoMesmaParada(
+        existente: ParadaKeeta,
+        nova: ParadaKeeta
+    ): Boolean {
+
+        if (
+            existente.tipo !=
+            nova.tipo
+        ) {
+            return false
+        }
+
+        val enderecoExistente =
+            normalizar(
+                existente.endereco
+            )
+
+        val enderecoNovo =
+            normalizar(
+                nova.endereco
+            )
+
+        if (
+            enderecoExistente.isBlank() ||
+            enderecoNovo.isBlank()
+        ) {
+            return false
+        }
+
+        if (
+            enderecoExistente ==
+            enderecoNovo
+        ) {
+            return true
+        }
+
+        /*
+         * Se ambos possuem número de imóvel e esses números
+         * são diferentes, tratamos como paradas diferentes.
+         * Isso evita juntar, por exemplo:
+         * Avenida X, 500
+         * Avenida X, 900
+         */
+        val numeroExistente =
+            extrairPrimeiroNumero(
+                enderecoExistente
+            )
+
+        val numeroNovo =
+            extrairPrimeiroNumero(
+                enderecoNovo
+            )
+
+        if (
+            numeroExistente != null &&
+            numeroNovo != null &&
+            numeroExistente != numeroNovo
+        ) {
+            return false
+        }
+
+        /*
+         * Se uma leitura contém praticamente toda a outra,
+         * consideramos a mesma parada. Isso resolve casos em
+         * que um frame perde "Brasil", "SP" ou parte do CEP.
+         */
+        val menorTamanho =
+            minOf(
+                enderecoExistente.length,
+                enderecoNovo.length
+            )
+
+        val maiorTamanho =
+            maxOf(
+                enderecoExistente.length,
+                enderecoNovo.length
+            )
+
+        if (
+            menorTamanho >= 12 &&
+            maiorTamanho > 0 &&
+            menorTamanho.toDouble() /
+            maiorTamanho.toDouble() >= 0.68 &&
+            (
+                    enderecoExistente.contains(
+                        enderecoNovo
+                    ) ||
+                            enderecoNovo.contains(
+                                enderecoExistente
+                            )
+                    )
+        ) {
+            return true
+        }
+
+        val similaridadeCaracteres =
+            similaridadeLevenshtein(
+                enderecoExistente,
+                enderecoNovo
+            )
+
+        val similaridadePalavras =
+            similaridadePorPalavras(
+                enderecoExistente,
+                enderecoNovo
+            )
+
+        return similaridadeCaracteres >= 0.82 ||
+                similaridadePalavras >= 0.80
+    }
+
+    private fun escolherMelhorParada(
+        existente: ParadaKeeta,
+        nova: ParadaKeeta
+    ): ParadaKeeta {
+
+        val pontuacaoExistente =
+            pontuarParada(
+                existente
+            )
+
+        val pontuacaoNova =
+            pontuarParada(
+                nova
+            )
+
+        return if (
+            pontuacaoNova >
+            pontuacaoExistente
+        ) {
+            nova
+        } else {
+            existente
+        }
+    }
+
+    private fun pontuarParada(
+        parada: ParadaKeeta
+    ): Int {
+
+        var pontos =
+            normalizar(
+                parada.endereco
+            ).length
+
+        if (
+            !parada.nome
+                .isNullOrBlank()
+        ) {
+            pontos += 20
+        }
+
+        return pontos
+    }
+
+    private fun extrairPrimeiroNumero(
+        texto: String
+    ): String? {
+
+        return Regex(
+            """\b\d{1,6}\b"""
+        )
+            .find(
+                texto
+            )
+            ?.value
+    }
+
+    private fun similaridadePorPalavras(
+        textoA: String,
+        textoB: String
+    ): Double {
+
+        val palavrasA =
+            textoA
+                .split(
+                    Regex("\\s+")
+                )
+                .filter {
+                    it.length >= 2
+                }
+                .toSet()
+
+        val palavrasB =
+            textoB
+                .split(
+                    Regex("\\s+")
+                )
+                .filter {
+                    it.length >= 2
+                }
+                .toSet()
+
+        if (
+            palavrasA.isEmpty() ||
+            palavrasB.isEmpty()
+        ) {
+            return 0.0
+        }
+
+        val comuns =
+            palavrasA
+                .intersect(
+                    palavrasB
+                )
+                .size
+
+        val maiorQuantidade =
+            maxOf(
+                palavrasA.size,
+                palavrasB.size
+            )
+
+        return comuns.toDouble() /
+                maiorQuantidade.toDouble()
+    }
+
+    private fun similaridadeLevenshtein(
+        textoA: String,
+        textoB: String
+    ): Double {
+
+        if (
+            textoA == textoB
+        ) {
+            return 1.0
+        }
+
+        if (
+            textoA.isEmpty() ||
+            textoB.isEmpty()
+        ) {
+            return 0.0
+        }
+
+        val distancia =
+            distanciaLevenshtein(
+                textoA,
+                textoB
+            )
+
+        val tamanhoMaior =
+            maxOf(
+                textoA.length,
+                textoB.length
+            )
+
+        return 1.0 -
+                distancia.toDouble() /
+                tamanhoMaior.toDouble()
+    }
+
+    private fun distanciaLevenshtein(
+        textoA: String,
+        textoB: String
+    ): Int {
+
+        var anterior =
+            IntArray(
+                textoB.length + 1
+            ) { indice ->
+                indice
+            }
+
+        var atual =
+            IntArray(
+                textoB.length + 1
+            )
+
+        for (
+        i in 1..textoA.length
+        ) {
+
+            atual[0] =
+                i
+
+            for (
+            j in 1..textoB.length
+            ) {
+
+                val custo =
+                    if (
+                        textoA[i - 1] ==
+                        textoB[j - 1]
+                    ) {
+                        0
+                    } else {
+                        1
+                    }
+
+                atual[j] =
+                    minOf(
+                        atual[j - 1] + 1,
+                        anterior[j] + 1,
+                        anterior[j - 1] + custo
+                    )
+            }
+
+            val temporario =
+                anterior
+
+            anterior =
+                atual
+
+            atual =
+                temporario
+        }
+
+        return anterior[
+            textoB.length
+        ]
     }
 
     private fun atualizarEstadoCompleto() {
 
+        val coletas =
+            ofertaTemporaria.paradas
+                .count {
+                    it.tipo ==
+                            TipoParadaKeeta.COLETA
+                }
+
+        val entregas =
+            ofertaTemporaria.paradas
+                .count {
+                    it.tipo ==
+                            TipoParadaKeeta.ENTREGA
+                }
+
+        val quantidadeEsperada =
+            ofertaTemporaria.quantidadePedidos
+
+        val possuiParadasSuficientes =
+            coletas >= 1 &&
+                    if (
+                        quantidadeEsperada != null &&
+                        quantidadeEsperada > 0
+                    ) {
+                        entregas >=
+                                quantidadeEsperada
+                    } else {
+                        entregas >= 1
+                    }
+
         ofertaTemporaria.completa =
             ofertaTemporaria.valor != null &&
                     ofertaTemporaria.distanciaTotal != null &&
-                    !ofertaTemporaria
-                        .enderecoColeta
-                        .isNullOrBlank() &&
-                    !ofertaTemporaria
-                        .enderecoEntrega
-                        .isNullOrBlank()
+                    possuiParadasSuficientes
 
         if (
             ofertaTemporaria.completa
@@ -468,8 +1050,9 @@ class LeitorTela(
                 "GARUPA_MEMORIA",
                 "✅ Oferta completa | " +
                         "Valor: ${ofertaTemporaria.valor} | " +
-                        "B: ${ofertaTemporaria.enderecoColeta} | " +
-                        "C: ${ofertaTemporaria.enderecoEntrega}"
+                        "coletas=$coletas | " +
+                        "entregas=$entregas | " +
+                        "pedidos=${ofertaTemporaria.quantidadePedidos}"
             )
 
         } else {
@@ -478,8 +1061,9 @@ class LeitorTela(
                 "GARUPA_MEMORIA",
                 "⏳ Oferta parcial | " +
                         "Valor: ${ofertaTemporaria.valor} | " +
-                        "B: ${ofertaTemporaria.enderecoColeta} | " +
-                        "C: aguardando"
+                        "coletas=$coletas | " +
+                        "entregas=$entregas | " +
+                        "pedidos=${ofertaTemporaria.quantidadePedidos}"
             )
         }
     }
@@ -489,7 +1073,6 @@ class LeitorTela(
         if (
             !ofertaTemporaria.completa
         ) {
-
             return
         }
 
@@ -497,45 +1080,51 @@ class LeitorTela(
             geocodificacaoEmAndamento ||
             rotaEmAndamento
         ) {
-
             return
         }
 
-        val assinaturaFinal =
-            criarAssinaturaFinal(
+        val identidadeAtual =
+            criarIdentidadeOferta(
                 ofertaTemporaria
             ) ?: return
 
-        /*
-         * ESTA É A TRAVA PRINCIPAL.
-         *
-         * Ela é global, então duas instâncias
-         * diferentes de LeitorTela não conseguem
-         * reservar a mesma oferta.
-         */
         val conseguiuReservar =
             synchronized(
                 travaGlobal
             ) {
 
+                val agora =
+                    System.currentTimeMillis()
+
+                val ultimaConcluidaRecente =
+                    ultimaIdentidadeGlobalConcluida
+                        ?.takeIf {
+                            agora - horarioUltimaConclusaoGlobal <=
+                                    JANELA_DEDUP_GLOBAL_MS
+                        }
+
                 when {
 
-                    assinaturaFinal ==
-                            ultimaAssinaturaGlobalConcluida -> {
-
+                    ultimaConcluidaRecente != null &&
+                            identidadesSaoMesmaOferta(
+                                identidadeAtual,
+                                ultimaConcluidaRecente
+                            ) -> {
                         false
                     }
 
-                    assinaturaFinal ==
-                            assinaturaGlobalEmAnalise -> {
-
+                    identidadeGlobalEmAnalise != null &&
+                            identidadesSaoMesmaOferta(
+                                identidadeAtual,
+                                identidadeGlobalEmAnalise!!
+                            ) -> {
                         false
                     }
 
                     else -> {
 
-                        assinaturaGlobalEmAnalise =
-                            assinaturaFinal
+                        identidadeGlobalEmAnalise =
+                            identidadeAtual
 
                         true
                     }
@@ -546,169 +1135,162 @@ class LeitorTela(
 
             Log.d(
                 "GARUPA_DEDUP",
-                "⏭️ Oferta já está sendo analisada ou já foi concluída"
+                "⏭️ Mesma oferta ignorada pela deduplicação global"
             )
 
             return
         }
 
-        assinaturaReservada =
-            assinaturaFinal
+        identidadeReservada =
+            identidadeAtual
 
         geocodificacaoEmAndamento =
             true
 
-        coordenadaB =
-            null
-
-        coordenadaC =
-            null
-
         Log.d(
             "GARUPA_DEDUP",
-            "🔒 Oferta reservada globalmente"
+            "🔒 Oferta multiparada reservada globalmente"
         )
 
-        geocodificarB()
-
-        geocodificarC()
+        geocodificarTodasParadas()
     }
 
-    private fun geocodificarB() {
+    private fun geocodificarTodasParadas() {
 
-        val enderecoB =
-            ofertaTemporaria.enderecoColeta
+        val paradas =
+            ofertaTemporaria.paradas
+                .toList()
 
-        if (enderecoB.isNullOrBlank()) {
+        if (paradas.size < 2) {
+
+            Log.d(
+                "GARUPA_ROTA_MULTI",
+                "❌ Paradas insuficientes para calcular rota"
+            )
 
             liberarAnaliseComErro()
+            return
+        }
+
+        val coordenadas =
+            mutableListOf<CoordenadaRota>()
+
+        geocodificarParadaSequencialmente(
+            paradas = paradas,
+            indice = 0,
+            coordenadas = coordenadas
+        )
+    }
+
+    private fun geocodificarParadaSequencialmente(
+        paradas: List<ParadaKeeta>,
+        indice: Int,
+        coordenadas: MutableList<CoordenadaRota>
+    ) {
+
+        if (indice >= paradas.size) {
+
+            geocodificacaoEmAndamento =
+                false
+
+            calcularRotaMultiparada(
+                paradas = paradas,
+                coordenadas = coordenadas
+            )
 
             return
         }
 
+        val parada =
+            paradas[indice]
+
+        Log.d(
+            "GARUPA_GEOCODER_MULTI",
+            "📍 Geocodificando ${indice + 1}/${paradas.size} | " +
+                    "${parada.tipo} | ${parada.endereco}"
+        )
+
         geocodificador.buscar(
-            enderecoB
+            parada.endereco
         ) { coordenada ->
 
-            if (
-                coordenada == null
-            ) {
+            if (coordenada == null) {
 
                 Log.d(
-                    "GARUPA_COORD_B",
-                    "❌ Não foi possível localizar B"
+                    "GARUPA_GEOCODER_MULTI",
+                    "❌ Falha na parada ${indice + 1} | ${parada.endereco}"
                 )
 
                 liberarAnaliseComErro()
-
                 return@buscar
             }
 
-            coordenadaB =
-                coordenada
+            coordenadas.add(
+                CoordenadaRota(
+                    latitude =
+                        coordenada.latitude,
 
-            Log.d(
-                "GARUPA_COORD_B",
-                "📍 B = " +
-                        "${coordenada.latitude}, " +
-                        "${coordenada.longitude}"
+                    longitude =
+                        coordenada.longitude
+                )
             )
 
-            tentarCalcularRota()
+            Log.d(
+                "GARUPA_GEOCODER_MULTI",
+                "✅ ${indice + 1}/${paradas.size} | " +
+                        "${parada.tipo} = " +
+                        "${coordenada.latitude}, ${coordenada.longitude}"
+            )
+
+            geocodificarParadaSequencialmente(
+                paradas = paradas,
+                indice = indice + 1,
+                coordenadas = coordenadas
+            )
         }
     }
 
-    private fun geocodificarC() {
+    private fun calcularRotaMultiparada(
+        paradas: List<ParadaKeeta>,
+        coordenadas: List<CoordenadaRota>
+    ) {
 
-        val enderecoC =
-            ofertaTemporaria.enderecoEntrega
-
-        if (enderecoC.isNullOrBlank()) {
-
-            liberarAnaliseComErro()
-
+        if (rotaEmAndamento) {
             return
         }
-
-        geocodificador.buscar(
-            enderecoC
-        ) { coordenada ->
-
-            if (
-                coordenada == null
-            ) {
-
-                Log.d(
-                    "GARUPA_COORD_C",
-                    "❌ Não foi possível localizar C"
-                )
-
-                liberarAnaliseComErro()
-
-                return@buscar
-            }
-
-            coordenadaC =
-                coordenada
-
-            Log.d(
-                "GARUPA_COORD_C",
-                "🏠 C = " +
-                        "${coordenada.latitude}, " +
-                        "${coordenada.longitude}"
-            )
-
-            tentarCalcularRota()
-        }
-    }
-
-    @Synchronized
-    private fun tentarCalcularRota() {
-
-        val pontoB =
-            coordenadaB
-                ?: return
-
-        val pontoC =
-            coordenadaC
-                ?: return
 
         val valorOferta =
             ofertaTemporaria.valor
                 ?: return liberarAnaliseComErro()
 
         if (
-            rotaEmAndamento
+            coordenadas.size !=
+            paradas.size
         ) {
 
+            liberarAnaliseComErro()
             return
         }
 
         rotaEmAndamento =
             true
 
-        geocodificacaoEmAndamento =
-            false
-
         Log.d(
-            "GARUPA_ROTA",
-            "🧭 B e C prontos. Buscando ponto A..."
+            "GARUPA_ROTA_MULTI",
+            "🧭 ${paradas.size} paradas geocodificadas. Buscando ponto A..."
         )
 
         gerenciadorLocalizacao
             .obterUltimaLocalizacao { localizacaoA ->
 
-                if (
-                    localizacaoA == null
-                ) {
+                if (localizacaoA == null) {
 
                     Log.d(
-                        "GARUPA_ROTA",
+                        "GARUPA_ROTA_MULTI",
                         "❌ Ponto A indisponível"
                     )
 
                     liberarAnaliseComErro()
-
                     return@obterUltimaLocalizacao
                 }
 
@@ -721,61 +1303,48 @@ class LeitorTela(
                             localizacaoA.longitude
                     )
 
-                val pontoBRota =
-                    CoordenadaRota(
-                        latitude =
-                            pontoB.latitude,
-
-                        longitude =
-                            pontoB.longitude
-                    )
-
-                val pontoCRota =
-                    CoordenadaRota(
-                        latitude =
-                            pontoC.latitude,
-
-                        longitude =
-                            pontoC.longitude
-                    )
-
-                calculadorRota.calcularABC(
-                    pontoA =
+                calculadorRota.calcularMultiplaParada(
+                    pontoInicial =
                         pontoA,
 
-                    pontoB =
-                        pontoBRota,
-
-                    pontoC =
-                        pontoCRota
+                    paradas =
+                        coordenadas
                 ) { resultado ->
 
-                    if (
-                        resultado == null
-                    ) {
+                    if (resultado == null) {
 
                         Log.d(
-                            "GARUPA_ROTA_FINAL",
-                            "❌ Não foi possível calcular A → B → C"
+                            "GARUPA_ROTA_MULTI",
+                            "❌ Não foi possível calcular rota multiparada"
                         )
 
                         liberarAnaliseComErro()
-
-                        return@calcularABC
+                        return@calcularMultiplaParada
                     }
+
+                    resultado.trechos
+                        .forEachIndexed { indice, trecho ->
+
+                            val destino =
+                                paradas.getOrNull(
+                                    indice
+                                )
+
+                            Log.d(
+                                "GARUPA_ROTA_MULTI",
+                                "🛣️ Trecho ${indice + 1} | " +
+                                        "destino=${destino?.tipo} | " +
+                                        "%.2f km".format(
+                                            trecho.distanciaKm
+                                        )
+                            )
+                        }
 
                     Log.d(
                         "GARUPA_ROTA_FINAL",
-                        "✅ A → B = " +
-                                "%.2f km | ".format(
-                                    resultado.distanciaABKm
-                                ) +
-                                "B → C = " +
-                                "%.2f km | ".format(
-                                    resultado.distanciaBCKm
-                                ) +
-                                "TOTAL = " +
-                                "%.2f km".format(
+                        "✅ MULTIPARADA | " +
+                                "paradas=${paradas.size} | " +
+                                "TOTAL = %.2f km".format(
                                     resultado.distanciaTotalKm
                                 )
                     )
@@ -789,12 +1358,6 @@ class LeitorTela(
                                 resultado.distanciaTotalKm
                         )
 
-                    /*
-                     * Primeiro marcamos GLOBALMENTE
-                     * como concluída.
-                     *
-                     * Só depois emitimos o resultado.
-                     */
                     concluirReservaGlobal()
 
                     ofertaTemporaria.analisada =
@@ -820,38 +1383,81 @@ class LeitorTela(
                                 avaliacao.sugestao
                     )
 
+                    anunciarDecisaoPorVoz(
+                        avaliacao.sugestao
+                    )
+
                     Log.d(
                         "GARUPA_MEMORIA",
-                        "🏁 Oferta finalizada e marcada como analisada"
+                        "🏁 Oferta multiparada finalizada e marcada como analisada"
                     )
                 }
             }
     }
 
+
+    private fun anunciarDecisaoPorVoz(
+        sugestao: String
+    ) {
+
+        when {
+
+            sugestao.contains(
+                "deixar passar",
+                ignoreCase = true
+            ) -> {
+
+                voz.anunciarDeixarPassar()
+            }
+
+            sugestao.contains(
+                "aceitar",
+                ignoreCase = true
+            ) -> {
+
+                voz.anunciarAceitar()
+            }
+
+            else -> {
+
+                Log.d(
+                    "GARUPA_VOZ",
+                    "⚠️ Sugestão sem comando de voz conhecido: $sugestao"
+                )
+            }
+        }
+    }
+
     private fun concluirReservaGlobal() {
 
-        val assinatura =
-            assinaturaReservada
+        val identidade =
+            identidadeReservada
                 ?: return
 
         synchronized(
             travaGlobal
         ) {
 
-            ultimaAssinaturaGlobalConcluida =
-                assinatura
+            ultimaIdentidadeGlobalConcluida =
+                identidade
+
+            horarioUltimaConclusaoGlobal =
+                System.currentTimeMillis()
 
             if (
-                assinaturaGlobalEmAnalise ==
-                assinatura
+                identidadeGlobalEmAnalise != null &&
+                identidadesSaoMesmaOferta(
+                    identidadeGlobalEmAnalise!!,
+                    identidade
+                )
             ) {
 
-                assinaturaGlobalEmAnalise =
+                identidadeGlobalEmAnalise =
                     null
             }
         }
 
-        assinaturaReservada =
+        identidadeReservada =
             null
     }
 
@@ -861,25 +1467,28 @@ class LeitorTela(
      */
     private fun liberarReservaGlobal() {
 
-        val assinatura =
-            assinaturaReservada
+        val identidade =
+            identidadeReservada
 
         synchronized(
             travaGlobal
         ) {
 
             if (
-                assinatura != null &&
-                assinaturaGlobalEmAnalise ==
-                assinatura
+                identidade != null &&
+                identidadeGlobalEmAnalise != null &&
+                identidadesSaoMesmaOferta(
+                    identidadeGlobalEmAnalise!!,
+                    identidade
+                )
             ) {
 
-                assinaturaGlobalEmAnalise =
+                identidadeGlobalEmAnalise =
                     null
             }
         }
 
-        assinaturaReservada =
+        identidadeReservada =
             null
     }
 
@@ -1081,9 +1690,9 @@ class LeitorTela(
         )
     }
 
-    private fun criarAssinaturaFinal(
+    private fun criarIdentidadeOferta(
         oferta: OfertaTemporaria
-    ): String? {
+    ): IdentidadeOfertaGlobal? {
 
         val valor =
             oferta.valor
@@ -1093,26 +1702,101 @@ class LeitorTela(
             oferta.distanciaTotal
                 ?: return null
 
-        val enderecoB =
-            oferta.enderecoColeta
-                ?: return null
+        if (oferta.paradas.size < 2) {
+            return null
+        }
 
-        val enderecoC =
-            oferta.enderecoEntrega
-                ?: return null
+        return IdentidadeOfertaGlobal(
+            valor =
+                valor,
 
-        return listOf(
-            "%.2f".format(valor),
-            "%.2f".format(distancia),
-            normalizar(
-                enderecoB
-            ),
-            normalizar(
-                enderecoC
-            )
-        ).joinToString(
-            "|"
+            distanciaTela =
+                distancia,
+
+            quantidadePedidos =
+                oferta.quantidadePedidos,
+
+            paradas =
+                oferta.paradas
+                    .map { parada ->
+                        parada.copy()
+                    }
         )
+    }
+
+    private fun identidadesSaoMesmaOferta(
+        a: IdentidadeOfertaGlobal,
+        b: IdentidadeOfertaGlobal
+    ): Boolean {
+
+        if (
+            kotlin.math.abs(
+                a.valor - b.valor
+            ) > 0.02
+        ) {
+            return false
+        }
+
+        /*
+         * A distância mostrada pelo Keeta pertence à própria
+         * oferta e tende a permanecer estável. Aceitamos uma
+         * pequena margem para erros de leitura do OCR.
+         */
+        if (
+            kotlin.math.abs(
+                a.distanciaTela -
+                        b.distanciaTela
+            ) > 0.20
+        ) {
+            return false
+        }
+
+        if (
+            a.quantidadePedidos != null &&
+            b.quantidadePedidos != null &&
+            a.quantidadePedidos !=
+            b.quantidadePedidos
+        ) {
+            return false
+        }
+
+        if (
+            a.paradas.size !=
+            b.paradas.size
+        ) {
+            return false
+        }
+
+        /*
+         * Comparamos as paradas por similaridade e não por texto
+         * exato. Cada parada de B só pode casar uma vez, o que
+         * preserva corretamente duas entregas reais no mesmo
+         * endereço.
+         */
+        val usadosEmB =
+            mutableSetOf<Int>()
+
+        for (paradaA in a.paradas) {
+
+            val indiceCompativel =
+                b.paradas
+                    .indices
+                    .firstOrNull { indice ->
+
+                        indice !in usadosEmB &&
+                                paradasSaoMesmaParada(
+                                    paradaA,
+                                    b.paradas[indice]
+                                )
+                    }
+                    ?: return false
+
+            usadosEmB.add(
+                indiceCompativel
+            )
+        }
+
+        return true
     }
 
     private fun normalizar(
