@@ -3,22 +3,27 @@ package br.com.garupa.app.core.leitura
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import br.com.garupa.app.core.Garupa
 import br.com.garupa.app.core.decisao.AvaliadorOferta
 import br.com.garupa.app.core.geocodificacao.CoordenadaEndereco
 import br.com.garupa.app.core.geocodificacao.GeocodificadorEndereco
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
 import br.com.garupa.app.core.memoria.OfertaTemporaria
+import br.com.garupa.app.core.oferta.DetectorOferta
+import br.com.garupa.app.core.oferta.ExtratorOferta
+import br.com.garupa.app.core.oferta.ParadaOferta
+import br.com.garupa.app.core.oferta.TipoParadaOferta
 import br.com.garupa.app.core.parser.ParserKeeta
 import br.com.garupa.app.core.parser.ParadaKeeta
 import br.com.garupa.app.core.parser.TipoParadaKeeta
 import br.com.garupa.app.core.rota.CalculadorRota
 import br.com.garupa.app.core.rota.CoordenadaRota
-import br.com.garupa.app.core.voz.Voz
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.text.Normalizer
+import java.util.concurrent.atomic.AtomicLong
 
 private data class IdentidadeOfertaGlobal(
     val valor: Double,
@@ -63,19 +68,18 @@ class LeitorTela(
          */
         private const val JANELA_DEDUP_GLOBAL_MS =
             120_000L
-
-        private val travaVozGlobal =
-            Any()
-
-        @Volatile
-        private var vozGlobal: Voz? =
-            null
     }
 
     private val reconhecedor =
         TextRecognition.getClient(
             TextRecognizerOptions.DEFAULT_OPTIONS
         )
+
+    private val detectorOferta =
+        DetectorOferta()
+
+    private val extratorOferta =
+        ExtratorOferta()
 
     private val parserKeeta =
         ParserKeeta()
@@ -95,20 +99,6 @@ class LeitorTela(
 
     private val avaliadorOferta =
         AvaliadorOferta()
-
-    private val voz: Voz =
-        synchronized(
-            travaVozGlobal
-        ) {
-            vozGlobal
-                ?: Voz(
-                    contexto.applicationContext
-                ).also { novaVoz ->
-                    novaVoz.iniciar()
-                    vozGlobal =
-                        novaVoz
-                }
-        }
 
     /*
      * Memória local da oferta apresentada
@@ -158,9 +148,40 @@ class LeitorTela(
     private var identidadeReservada: IdentidadeOfertaGlobal? =
         null
 
+    /*
+     * O OCR do ML Kit é assíncrono.
+     *
+     * TESTE e CAPTURA_CONTINUA usam gerações independentes.
+     * Assim, um frame automático da captura não invalida a print
+     * escolhida manualmente, e uma print de teste não interfere
+     * na captura contínua.
+     *
+     * Dentro da MESMA origem, somente o resultado mais recente
+     * continua válido.
+     */
+    private val geracaoTeste =
+        AtomicLong(0L)
+
+    private val geracaoCapturaContinua =
+        AtomicLong(0L)
+
     fun lerImagem(
-        caminhoImagem: String
+        caminhoImagem: String,
+        origem: OrigemLeitura = OrigemLeitura.CAPTURA_CONTINUA
     ) {
+
+        val contadorGeracao =
+            when (origem) {
+
+                OrigemLeitura.TESTE ->
+                    geracaoTeste
+
+                OrigemLeitura.CAPTURA_CONTINUA ->
+                    geracaoCapturaContinua
+            }
+
+        val geracaoDestaImagem =
+            contadorGeracao.incrementAndGet()
 
         val arquivo =
             File(
@@ -192,6 +213,22 @@ class LeitorTela(
                     imagem
                 )
                 .addOnSuccessListener { resultado ->
+
+                    if (
+                        geracaoDestaImagem !=
+                        contadorGeracao.get()
+                    ) {
+
+                        Log.d(
+                            "GARUPA_FRAME",
+                            "⏭️ OCR antigo descartado | " +
+                                    "origem=$origem | " +
+                                    "geracao=$geracaoDestaImagem | " +
+                                    "atual=${contadorGeracao.get()}"
+                        )
+
+                        return@addOnSuccessListener
+                    }
 
                     if (
                         resultado.text.isBlank()
@@ -232,38 +269,198 @@ class LeitorTela(
                                 linha.y
                             }
 
-                    val resultadoKeeta =
-                        parserKeeta.analisar(
+                    /*
+                     * Primeiro perguntamos ao detector genérico
+                     * se a tela realmente parece uma oferta.
+                     *
+                     * Nesta etapa, R$ é obrigatório e precisa
+                     * vir acompanhado de outros sinais como km,
+                     * endereço, ação de pedido ou vocabulário
+                     * de delivery.
+                     */
+                    /*
+                     * Uma nova imagem pode ter chegado enquanto
+                     * transformávamos o OCR em LinhaOcr.
+                     */
+                    if (
+                        geracaoDestaImagem !=
+                        contadorGeracao.get()
+                    ) {
+
+                        Log.d(
+                            "GARUPA_FRAME",
+                            "⏭️ Frame ultrapassado descartado antes do detector | " +
+                                    "origem=$origem | " +
+                                    "geracao=$geracaoDestaImagem | " +
+                                    "atual=${contadorGeracao.get()}"
+                        )
+
+                        return@addOnSuccessListener
+                    }
+
+                    val deteccaoOferta =
+                        detectorOferta.analisar(
                             linhasOcr
                         )
 
+                    if (!deteccaoOferta.pareceOferta) {
+
+                        Log.d(
+                            "GARUPA_LEITOR",
+                            "🛑 Tela ignorada: não atingiu confiança de oferta"
+                        )
+
+                        return@addOnSuccessListener
+                    }
+
+                    /*
+                     * =====================================================
+                     * EXTRAÇÃO OPERACIONAL GENÉRICA
+                     * =====================================================
+                     *
+                     * A partir daqui o ExtratorOferta passa a ser a fonte
+                     * operacional da memória.
+                     *
+                     * O ParserKeeta continua sendo executado somente como
+                     * diagnóstico/fallback visual durante esta migração,
+                     * mas seu resultado NÃO alimenta mais a memória.
+                     */
+                    val resultadoGenerico =
+                        extratorOferta.extrair(
+                            linhasOcr
+                        )
+
+                    /*
+                     * Mantemos o parser antigo rodando para comparação
+                     * de logs enquanto validamos Keeta + 99Food.
+                     */
+                    parserKeeta.analisar(
+                        linhasOcr
+                    )
+
+                    /*
+                     * Última proteção antes de alterar a memória.
+                     * Se outro frame entrou enquanto detector/extrator/
+                     * parser trabalhavam, este resultado já não representa
+                     * mais a tela mais recente.
+                     */
+                    if (
+                        geracaoDestaImagem !=
+                        contadorGeracao.get()
+                    ) {
+
+                        Log.d(
+                            "GARUPA_FRAME",
+                            "⏭️ Frame ultrapassado descartado antes da memória | " +
+                                    "origem=$origem | " +
+                                    "geracao=$geracaoDestaImagem | " +
+                                    "atual=${contadorGeracao.get()}"
+                        )
+
+                        return@addOnSuccessListener
+                    }
+
+                    val paradasOperacionais =
+                        converterParadasGenericas(
+                            resultadoGenerico.paradasObservadas
+                        )
+
+                    val coletaGenerica =
+                        resultadoGenerico.paradasObservadas
+                            .firstOrNull {
+                                it.tipo ==
+                                        TipoParadaOferta.COLETA
+                            }
+
+                    val entregaGenerica =
+                        resultadoGenerico.paradasObservadas
+                            .firstOrNull {
+                                it.tipo ==
+                                        TipoParadaOferta.ENTREGA
+                            }
+
+                    /*
+                     * Para compatibilidade temporária com OfertaTemporaria,
+                     * usamos o nome da coleta como localizador quando a
+                     * plataforma não exibe o endereço completo.
+                     *
+                     * Exemplo observado na 99Food:
+                     * Barceloneta
+                     */
+                    val localizadorColeta =
+                        coletaGenerica
+                            ?.endereco
+                            ?.takeIf {
+                                it.isNotBlank()
+                            }
+                            ?: coletaGenerica
+                                ?.nome
+                                ?.takeIf {
+                                    it.isNotBlank()
+                                }
+
+                    val localizadorEntrega =
+                        entregaGenerica
+                            ?.endereco
+                            ?.takeIf {
+                                it.isNotBlank()
+                            }
+                            ?: entregaGenerica
+                                ?.nome
+                                ?.takeIf {
+                                    it.isNotBlank()
+                                }
+
+                    val quantidadePedidosGenerica =
+                        extrairQuantidadePedidosGenerica(
+                            linhasOcr
+                        )
+                            ?: resultadoGenerico
+                                .paradasObservadas
+                                .count {
+                                    it.tipo ==
+                                            TipoParadaOferta.ENTREGA
+                                }
+                                .takeIf {
+                                    it > 0
+                                }
+
+                    Log.d(
+                        "GARUPA_FONTE_OPERACIONAL",
+                        "🧠 Extrator genérico → memória | " +
+                                "valor=${resultadoGenerico.valor} | " +
+                                "distancia=${resultadoGenerico.distanciaKm} | " +
+                                "paradas=${paradasOperacionais.size} | " +
+                                "pedidos=$quantidadePedidosGenerica"
+                    )
+
                     atualizarOfertaTemporaria(
                         valor =
-                            resultadoKeeta.valor,
+                            resultadoGenerico.valor,
 
                         distancia =
-                            resultadoKeeta.distancia,
+                            resultadoGenerico.distanciaKm,
 
                         nomeColeta =
-                            resultadoKeeta.nomeColeta,
+                            coletaGenerica?.nome,
 
                         enderecoColeta =
-                            resultadoKeeta.enderecoColeta,
+                            localizadorColeta,
 
                         enderecoEntrega =
-                            resultadoKeeta.enderecoEntrega,
+                            localizadorEntrega,
 
                         coletaVisivel =
-                            resultadoKeeta.coletaVisivel,
+                            coletaGenerica != null,
 
                         entregaVisivel =
-                            resultadoKeeta.entregaVisivel,
+                            entregaGenerica != null,
 
                         quantidadePedidos =
-                            resultadoKeeta.quantidadePedidos,
+                            quantidadePedidosGenerica,
 
                         paradas =
-                            resultadoKeeta.paradas
+                            paradasOperacionais
                     )
 
                     tentarIniciarAnaliseCompleta()
@@ -285,6 +482,106 @@ class LeitorTela(
                 erro
             )
         }
+    }
+
+    /*
+     * =========================================================
+     * PONTE TEMPORÁRIA: ParadaOferta -> ParadaKeeta
+     * =========================================================
+     *
+     * A memória/rota ainda usa ParadaKeeta internamente.
+     * Esta ponte permite que o ExtratorOferta genérico assuma
+     * a leitura operacional sem reescrever a rota inteira agora.
+     */
+    private fun converterParadasGenericas(
+        paradas: List<ParadaOferta>
+    ): List<ParadaKeeta> {
+
+        return paradas
+            .mapNotNull { parada ->
+
+                val tipoKeeta =
+                    when (
+                        parada.tipo
+                    ) {
+
+                        TipoParadaOferta.COLETA ->
+                            TipoParadaKeeta.COLETA
+
+                        TipoParadaOferta.ENTREGA ->
+                            TipoParadaKeeta.ENTREGA
+
+                        TipoParadaOferta.DESCONHECIDA ->
+                            null
+                    }
+                        ?: return@mapNotNull null
+
+                /*
+                 * Preferimos endereço.
+                 * Se a plataforma mostrar somente o nome/local,
+                 * preservamos esse texto como consulta para o
+                 * geocodificador.
+                 */
+                val localizador =
+                    parada.endereco
+                        ?.takeIf {
+                            it.isNotBlank()
+                        }
+                        ?: parada.nome
+                            ?.takeIf {
+                                it.isNotBlank()
+                            }
+                        ?: return@mapNotNull null
+
+                ParadaKeeta(
+                    tipo =
+                        tipoKeeta,
+
+                    nome =
+                        parada.nome,
+
+                    endereco =
+                        localizador
+                )
+            }
+    }
+
+    /*
+     * =========================================================
+     * QUANTIDADE EXPLÍCITA DE PEDIDOS
+     * =========================================================
+     *
+     * Exemplos:
+     * 2 pedidos para coletar
+     * 3 pedidos para coletar
+     */
+    private fun extrairQuantidadePedidosGenerica(
+        linhas: List<LinhaOcr>
+    ): Int? {
+
+        val regex =
+            Regex(
+                """\b(\d+)\s+pedidos?\s+(?:para\s+)?coletar\b""",
+                RegexOption.IGNORE_CASE
+            )
+
+        return linhas
+            .asSequence()
+            .mapNotNull { linha ->
+
+                regex
+                    .find(
+                        linha.texto
+                    )
+                    ?.groupValues
+                    ?.getOrNull(
+                        1
+                    )
+                    ?.toIntOrNull()
+            }
+            .firstOrNull {
+                it in 1..10
+            }
     }
 
     private fun atualizarOfertaTemporaria(
@@ -528,41 +825,91 @@ class LeitorTela(
         novasParadas: List<ParadaKeeta>
     ) {
 
-        if (novasParadas.isEmpty()) {
+        if (
+            novasParadas.isEmpty()
+        ) {
             return
         }
 
         /*
-         * IMPORTANTE:
+         * =========================================================
+         * FILTRO DO FRAME
+         * =========================================================
          *
-         * Não tratamos "endereço" como uma chave única.
-         * Uma oferta agrupada pode realmente possuir duas
-         * entregas no mesmo endereço.
+         * Antes de reconciliar com a memória, removemos localizadores
+         * que claramente pertencem à interface/overlay e não à oferta.
          *
-         * Em vez disso, cada frame é reconciliado com a memória:
-         * uma parada existente só pode ser usada UMA VEZ naquele
-         * frame. Assim:
-         *
-         * frame 1: C1
-         * frame 2: C1 + C1  -> memória passa a ter 2 entregas
-         * frame 3: C1 + C1  -> continua com 2, sem virar 4
-         *
-         * Pequenas diferenças do OCR são comparadas por similaridade.
+         * Exemplo observado:
+         * "+ Responder ao ChatGPT"
          */
+        val paradasValidas =
+            novasParadas
+                .filter { parada ->
+
+                    val valida =
+                        localizadorParadaValido(
+                            parada.endereco
+                        )
+
+                    if (!valida) {
+
+                        Log.d(
+                            "GARUPA_MEMORIA_PARADAS",
+                            "🧹 Parada ignorada por ruído | " +
+                                    "${parada.tipo} | " +
+                                    parada.endereco
+                        )
+                    }
+
+                    valida
+                }
+
+        if (
+            paradasValidas.isEmpty()
+        ) {
+
+            return
+        }
+
+        /*
+         * Quantas ocorrências válidas de cada tipo vieram NESTE frame.
+         *
+         * Isso é importante para distinguir:
+         *
+         * - a mesma coleta reaparecendo em vários frames;
+         * - duas coletas realmente visíveis no mesmo frame;
+         * - duas entregas legítimas no mesmo endereço.
+         */
+        val coletasNesteFrame =
+            paradasValidas.count {
+                it.tipo ==
+                        TipoParadaKeeta.COLETA
+            }
+
         val indicesUsadosNesteFrame =
             mutableSetOf<Int>()
 
-        novasParadas.forEach { novaParada ->
+        paradasValidas.forEach { novaParada ->
 
             val enderecoNovo =
                 normalizar(
                     novaParada.endereco
                 )
 
-            if (enderecoNovo.isBlank()) {
+            if (
+                enderecoNovo.isBlank()
+            ) {
                 return@forEach
             }
 
+            /*
+             * =====================================================
+             * 1. CASAMENTO NORMAL POR SIMILARIDADE
+             * =====================================================
+             *
+             * Uma parada existente só pode ser usada uma vez no mesmo
+             * frame. Isso preserva duas entregas reais no mesmo endereço.
+             */
             val indiceCompativel =
                 ofertaTemporaria.paradas
                     .indices
@@ -588,16 +935,14 @@ class LeitorTela(
                                 )
                     }
 
-            if (indiceCompativel != null) {
+            if (
+                indiceCompativel != null
+            ) {
 
                 indicesUsadosNesteFrame.add(
                     indiceCompativel
                 )
 
-                /*
-                 * Se a leitura nova estiver mais completa,
-                 * substitui a versão antiga da mesma parada.
-                 */
                 val existente =
                     ofertaTemporaria.paradas[
                         indiceCompativel
@@ -605,52 +950,148 @@ class LeitorTela(
 
                 ofertaTemporaria.paradas[
                     indiceCompativel
-                ] = escolherMelhorParada(
-                    existente,
-                    novaParada
-                )
-
-                return@forEach
-            }
-
-            /*
-             * Quando o Keeta informa a quantidade de pedidos,
-             * usamos esse número também como proteção contra
-             * falsos positivos do OCR.
-             *
-             * Duas entregas reais no MESMO endereço continuam
-             * permitidas, desde que tenham aparecido como duas
-             * ocorrências no mesmo frame.
-             */
-            val limiteDoTipo =
-                ofertaTemporaria.quantidadePedidos
-                    ?.takeIf {
-                        it > 0
-                    }
-
-            val quantidadeAtualDoTipo =
-                ofertaTemporaria.paradas
-                    .count {
-                        it.tipo ==
-                                novaParada.tipo
-                    }
-
-            if (
-                limiteDoTipo != null &&
-                quantidadeAtualDoTipo >=
-                limiteDoTipo
-            ) {
+                ] =
+                    escolherMelhorParada(
+                        existente,
+                        novaParada
+                    )
 
                 Log.d(
                     "GARUPA_MEMORIA_PARADAS",
-                    "🧹 ${novaParada.tipo} extra ignorada " +
-                            "(limite=$limiteDoTipo) | " +
+                    "♻️ ${novaParada.tipo} já conhecida | " +
                             novaParada.endereco
                 )
 
                 return@forEach
             }
 
+            /*
+             * =====================================================
+             * 2. CONSOLIDAÇÃO DE COLETA ENTRE FRAMES
+             * =====================================================
+             *
+             * Se este frame contém UMA única coleta válida e a memória
+             * também possui UMA única coleta, tratamos uma leitura muito
+             * diferente do OCR como atualização da mesma parada.
+             *
+             * Isso resolve casos em que a mesma coleta aparece como:
+             *
+             * frame A: "Alameda Araguaia, 762, Alphaville"
+             * frame B: uma versão truncada/alterada pelo OCR
+             *
+             * sem impedir múltiplas coletas reais: se o próprio frame
+             * trouxer 2+ coletas, cada ocorrência continua independente.
+             */
+            if (
+                novaParada.tipo ==
+                TipoParadaKeeta.COLETA &&
+                coletasNesteFrame == 1
+            ) {
+
+                val indicesColetasExistentes =
+                    ofertaTemporaria.paradas
+                        .indices
+                        .filter { indice ->
+
+                            ofertaTemporaria.paradas[
+                                indice
+                            ].tipo ==
+                                    TipoParadaKeeta.COLETA
+                        }
+
+                if (
+                    indicesColetasExistentes.size == 1
+                ) {
+
+                    val indiceColeta =
+                        indicesColetasExistentes.first()
+
+                    if (
+                        indiceColeta !in
+                        indicesUsadosNesteFrame
+                    ) {
+
+                        val coletaExistente =
+                            ofertaTemporaria.paradas[
+                                indiceColeta
+                            ]
+
+                        ofertaTemporaria.paradas[
+                            indiceColeta
+                        ] =
+                            escolherMelhorParada(
+                                coletaExistente,
+                                novaParada
+                            )
+
+                        indicesUsadosNesteFrame.add(
+                            indiceColeta
+                        )
+
+                        Log.d(
+                            "GARUPA_MEMORIA_PARADAS",
+                            "♻️ COLETA consolidada entre frames | " +
+                                    "memoria=${coletaExistente.endereco} | " +
+                                    "frame=${novaParada.endereco}"
+                        )
+
+                        return@forEach
+                    }
+                }
+            }
+
+            /*
+             * =====================================================
+             * 3. LIMITE DE ENTREGAS
+             * =====================================================
+             *
+             * "quantidadePedidos" limita ENTREGAS, não coletas.
+             *
+             * Exemplo:
+             * 2 pedidos para coletar
+             * -> 1 coleta
+             * -> 2 entregas
+             */
+            if (
+                novaParada.tipo ==
+                TipoParadaKeeta.ENTREGA
+            ) {
+
+                val limiteEntregas =
+                    ofertaTemporaria.quantidadePedidos
+                        ?.takeIf {
+                            it > 0
+                        }
+
+                val quantidadeEntregas =
+                    ofertaTemporaria.paradas
+                        .count {
+                            it.tipo ==
+                                    TipoParadaKeeta.ENTREGA
+                        }
+
+                if (
+                    limiteEntregas != null &&
+                    quantidadeEntregas >=
+                    limiteEntregas
+                ) {
+
+                    Log.d(
+                        "GARUPA_MEMORIA_PARADAS",
+                        "🧹 ENTREGA extra ignorada " +
+                                "(limite=$limiteEntregas) | " +
+                                novaParada.endereco
+                    )
+
+                    return@forEach
+                }
+            }
+
+            /*
+             * =====================================================
+             * 4. NOVA PARADA REAL
+             * =====================================================
+             */
             ofertaTemporaria.paradas.add(
                 novaParada
             )
@@ -691,6 +1132,98 @@ class LeitorTela(
                     "entregas=$entregas | " +
                     "pedidos=${ofertaTemporaria.quantidadePedidos}"
         )
+    }
+
+    /*
+     * =========================================================
+     * VALIDAÇÃO DE LOCALIZADOR DE PARADA
+     * =========================================================
+     *
+     * A captura contínua pode enxergar overlays do sistema,
+     * do próprio ChatGPT ou controles auxiliares sobre a print.
+     * Esses textos nunca devem entrar na memória como parada.
+     */
+    private fun localizadorParadaValido(
+        texto: String
+    ): Boolean {
+
+        val normalizado =
+            normalizar(
+                texto
+            )
+
+        if (
+            normalizado.length < 4
+        ) {
+            return false
+        }
+
+        val ruidos =
+            listOf(
+                "responder ao chatgpt",
+                "responder",
+                "chatgpt",
+                "google lens",
+                "compartilhar",
+                "favorito",
+                "editar",
+                "excluir",
+                "visualizar",
+                "aceitar",
+                "recusar",
+                "rejeitar",
+                "pegar",
+                "novo pedido",
+                "pedido aguardando",
+                "ganhos nessa entrega",
+                "entrega food"
+            )
+
+        if (
+            ruidos.any { ruido ->
+
+                normalizado.contains(
+                    normalizar(
+                        ruido
+                    )
+                )
+            }
+        ) {
+
+            return false
+        }
+
+        /*
+         * Rejeita símbolos, códigos soltos e lixo OCR sem conteúdo
+         * textual suficiente. Nomes como "Barceloneta" continuam
+         * válidos para plataformas que não mostram o endereço da coleta.
+         */
+        val quantidadeLetras =
+            normalizado.count {
+                it.isLetter()
+            }
+
+        if (
+            quantidadeLetras < 3
+        ) {
+
+            return false
+        }
+
+        val quantidadeDigitos =
+            normalizado.count {
+                it.isDigit()
+            }
+
+        if (
+            quantidadeDigitos >= 5 &&
+            quantidadeLetras <= 2
+        ) {
+
+            return false
+        }
+
+        return true
     }
 
     private fun paradasSaoMesmaParada(
@@ -1407,7 +1940,7 @@ class LeitorTela(
                 ignoreCase = true
             ) -> {
 
-                voz.anunciarDeixarPassar()
+                Garupa.obterVoz()?.anunciarDeixarPassar()
             }
 
             sugestao.contains(
@@ -1415,7 +1948,7 @@ class LeitorTela(
                 ignoreCase = true
             ) -> {
 
-                voz.anunciarAceitar()
+                Garupa.obterVoz()?.anunciarAceitar()
             }
 
             else -> {
@@ -1607,14 +2140,11 @@ class LeitorTela(
             return false
         }
 
-        val endereco =
+        val identificadorColeta =
             enderecoColeta.trim()
 
         if (
-            !Regex("""\d""")
-                .containsMatchIn(
-                    endereco
-                )
+            identificadorColeta.length !in 4..180
         ) {
 
             return false
@@ -1630,13 +2160,14 @@ class LeitorTela(
                 "recusar",
                 "pegar",
                 "entrega food",
-                "pedido aguardando"
+                "pedido aguardando",
+                "pedidos para coletar"
             )
 
         if (
             sinaisDeRuido.any { ruido ->
 
-                endereco.contains(
+                identificadorColeta.contains(
                     ruido,
                     ignoreCase = true
                 )
@@ -1646,22 +2177,51 @@ class LeitorTela(
             return false
         }
 
-        if (
-            endereco.length > 180
-        ) {
+        /*
+         * Caso 1: endereço tradicional.
+         */
+        val possuiNumero =
+            Regex(
+                """\d"""
+            ).containsMatchIn(
+                identificadorColeta
+            )
 
-            return false
-        }
-
-        val pareceEndereco =
+        val possuiTipoVia =
             Regex(
                 """\b(rua|r\.|av\.?|avenida|alameda|travessa|estrada|rodovia|praça|praca)\b""",
                 RegexOption.IGNORE_CASE
             ).containsMatchIn(
-                endereco
+                identificadorColeta
             )
 
-        return pareceEndereco
+        if (
+            possuiNumero &&
+            possuiTipoVia
+        ) {
+
+            return true
+        }
+
+        /*
+         * Caso 2: algumas plataformas exibem apenas o nome/local
+         * da coleta na oferta (ex.: "Barceloneta").
+         *
+         * Como esse texto já veio de uma ParadaOferta classificada
+         * como COLETA, aceitamos um identificador textual razoável.
+         */
+        val quantidadeLetras =
+            identificadorColeta.count {
+                it.isLetter()
+            }
+
+        val quantidadeDigitos =
+            identificadorColeta.count {
+                it.isDigit()
+            }
+
+        return quantidadeLetras >= 4 &&
+                quantidadeDigitos < 5
     }
 
     private fun criarAssinaturaBase(

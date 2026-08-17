@@ -19,43 +19,58 @@ import br.com.garupa.app.core.Garupa
 import br.com.garupa.app.core.captura.CapturaForegroundService
 import br.com.garupa.app.core.captura.CapturaTela
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
-import br.com.garupa.app.core.teste.TesteImagem
 import br.com.garupa.app.ui.theme.GarupaTheme
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var capturaTela: CapturaTela
+    private lateinit var capturaTela:
+            CapturaTela
 
     private lateinit var gerenciadorLocalizacao:
             GerenciadorLocalizacao
 
-    private lateinit var testeImagem:
-            TesteImagem
+    /*
+     * =========================================================
+     * MICROFONE
+     * =========================================================
+     */
 
-    private val selecionarImagemTeste =
+    private val pedidoMicrofone =
         registerForActivityResult(
-            ActivityResultContracts.GetContent()
-        ) { uri ->
+            ActivityResultContracts.RequestPermission()
+        ) { concedida ->
 
-            if (uri != null) {
+            if (
+                concedida
+            ) {
 
                 Log.d(
-                    "GARUPA_TESTE",
-                    "🧪 Print selecionada"
+                    "GARUPA_OUVIDO",
+                    "🎤 Permissão de microfone concedida"
                 )
 
-                testeImagem.analisarImagem(
-                    uri
-                )
+                Garupa.iniciarEscuta()
 
             } else {
 
                 Log.d(
-                    "GARUPA_TESTE",
-                    "🧪 Nenhuma print selecionada"
+                    "GARUPA_OUVIDO",
+                    "❌ Permissão de microfone não concedida"
                 )
             }
+
+            /*
+             * Independente da decisão sobre o microfone,
+             * seguimos normalmente com localização/captura.
+             */
+            verificarPermissaoLocalizacao()
         }
+
+    /*
+     * =========================================================
+     * LOCALIZAÇÃO
+     * =========================================================
+     */
 
     private val pedidoLocalizacao =
         registerForActivityResult(
@@ -94,6 +109,12 @@ class MainActivity : ComponentActivity() {
                 iniciarPedidoCaptura()
             }
         }
+
+    /*
+     * =========================================================
+     * CAPTURA DA TELA
+     * =========================================================
+     */
 
     private val pedidoCapturaTela =
         registerForActivityResult(
@@ -143,10 +164,8 @@ class MainActivity : ComponentActivity() {
 
                 Log.d(
                     "GARUPA",
-                    "📸 Autorização enviada para o serviço de captura"
+                    "📸 Captura contínua autorizada e serviço iniciado"
                 )
-
-                abrirGaleriaTeste()
 
             } else {
 
@@ -154,8 +173,6 @@ class MainActivity : ComponentActivity() {
                     "GARUPA",
                     "📸 Captura de tela não autorizada"
                 )
-
-                abrirGaleriaTeste()
             }
         }
 
@@ -181,11 +198,6 @@ class MainActivity : ComponentActivity() {
                 this
             )
 
-        testeImagem =
-            TesteImagem(
-                this
-            )
-
         enableEdgeToEdge()
 
         setContent {
@@ -207,8 +219,50 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        verificarPermissaoLocalizacao()
+        verificarPermissaoMicrofone()
     }
+
+    /*
+     * =========================================================
+     * MICROFONE
+     * =========================================================
+     */
+
+    private fun verificarPermissaoMicrofone() {
+
+        val permissao =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            )
+
+        if (
+            permissao ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+
+            Log.d(
+                "GARUPA_OUVIDO",
+                "🎤 Microfone já autorizado"
+            )
+
+            Garupa.iniciarEscuta()
+
+            verificarPermissaoLocalizacao()
+
+        } else {
+
+            pedidoMicrofone.launch(
+                Manifest.permission.RECORD_AUDIO
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * LOCALIZAÇÃO
+     * =========================================================
+     */
 
     private fun verificarPermissaoLocalizacao() {
 
@@ -231,12 +285,6 @@ class MainActivity : ComponentActivity() {
             PackageManager.PERMISSION_GRANTED
         ) {
 
-            /*
-             * Aqui pegamos apenas uma posição inicial.
-             *
-             * O acompanhamento contínuo será iniciado
-             * pelo CapturaForegroundService.
-             */
             obterLocalizacaoPiloto()
 
         } else {
@@ -278,22 +326,16 @@ class MainActivity : ComponentActivity() {
             }
     }
 
+    /*
+     * =========================================================
+     * CAPTURA
+     * =========================================================
+     */
+
     private fun iniciarPedidoCaptura() {
 
         pedidoCapturaTela.launch(
             capturaTela.criarPedidoPermissao()
-        )
-    }
-
-    private fun abrirGaleriaTeste() {
-
-        Log.d(
-            "GARUPA_TESTE",
-            "🧪 Abrindo galeria para teste"
-        )
-
-        selecionarImagemTeste.launch(
-            "image/*"
         )
     }
 }

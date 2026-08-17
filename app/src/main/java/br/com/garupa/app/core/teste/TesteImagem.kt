@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import br.com.garupa.app.core.leitura.LeitorTela
+import br.com.garupa.app.core.leitura.OrigemLeitura
 import java.io.File
 import java.io.FileOutputStream
 
@@ -18,10 +19,15 @@ class TesteImagem(
 
         try {
 
+            /*
+             * Cada print selecionada recebe um arquivo próprio.
+             * Isso evita sobrescrever uma imagem enquanto o OCR
+             * anterior ainda está processando.
+             */
             val arquivoTeste =
                 File(
                     contexto.cacheDir,
-                    "garupa_teste.png"
+                    "garupa_teste_${System.nanoTime()}.png"
                 )
 
             contexto.contentResolver
@@ -46,11 +52,13 @@ class TesteImagem(
 
             Log.d(
                 "GARUPA_TESTE",
-                "🧪 Print carregada: ${arquivoTeste.absolutePath}"
+                "🧪 Nova print carregada | " +
+                        "arquivo=${arquivoTeste.name}"
             )
 
             leitorTela.lerImagem(
-                arquivoTeste.absolutePath
+                caminhoImagem = arquivoTeste.absolutePath,
+                origem = OrigemLeitura.TESTE
             )
 
         } catch (erro: Exception) {
