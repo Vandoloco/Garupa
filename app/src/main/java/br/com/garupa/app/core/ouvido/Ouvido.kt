@@ -1,7 +1,13 @@
 package br.com.garupa.app.core.ouvido
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -9,6 +15,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import androidx.core.content.ContextCompat
 
 class Ouvido(
     contexto: Context
@@ -17,24 +24,87 @@ class Ouvido(
     private val contextoAplicacao =
         contexto.applicationContext
 
+    /*
+     * SpeechRecognizer exige a MAIN THREAD.
+     *
+     * Tudo que inicia, pausa, cancela ou destrói
+     * o reconhecimento passa por este Handler.
+     */
     private val handler =
         Handler(
             Looper.getMainLooper()
+        )
+
+    private val audioManager =
+        contextoAplicacao.getSystemService(
+            AudioManager::class.java
         )
 
     private var reconhecedor:
             SpeechRecognizer? =
         null
 
+    @Volatile
     private var escutando =
         false
 
+    @Volatile
     private var deveContinuarEscutando =
+        false
+
+    private var callbackAudioRegistrado =
         false
 
     private var aoReconhecerFala:
             ((String) -> Unit)? =
         null
+
+    /*
+     * =========================================================
+     * MONITOR DE DISPOSITIVOS DE ÁUDIO
+     * =========================================================
+     *
+     * Se o intercom conectar/desconectar ou o Android
+     * alterar a rota, tentamos recuperar o Bluetooth.
+     */
+    private val callbackAudio =
+        object :
+            AudioDeviceCallback() {
+
+            override fun onAudioDevicesAdded(
+                addedDevices: Array<out AudioDeviceInfo>
+            ) {
+
+                Log.d(
+                    "GARUPA_BLUETOOTH",
+                    "🎧 Dispositivo de áudio conectado"
+                )
+
+                handler.postDelayed(
+                    {
+                        garantirRotaIntercom()
+                    },
+                    500L
+                )
+            }
+
+            override fun onAudioDevicesRemoved(
+                removedDevices: Array<out AudioDeviceInfo>
+            ) {
+
+                Log.d(
+                    "GARUPA_BLUETOOTH",
+                    "🎧 Dispositivo de áudio removido"
+                )
+
+                handler.postDelayed(
+                    {
+                        garantirRotaIntercom()
+                    },
+                    500L
+                )
+            }
+        }
 
     fun definirAoReconhecerFala(
         callback: (String) -> Unit
@@ -44,7 +114,28 @@ class Ouvido(
             callback
     }
 
+    /*
+     * =========================================================
+     * INICIALIZAÇÃO
+     * =========================================================
+     */
+
     fun iniciar() {
+
+        /*
+         * Garante execução na MAIN THREAD.
+         */
+        if (
+            Looper.myLooper() !=
+            Looper.getMainLooper()
+        ) {
+
+            handler.post {
+                iniciar()
+            }
+
+            return
+        }
 
         if (
             reconhecedor != null
@@ -66,14 +157,26 @@ class Ouvido(
             return
         }
 
+        /*
+         * O Android passa a tratar a sessão como
+         * comunicação de voz.
+         */
+        audioManager.mode =
+            AudioManager.MODE_IN_COMMUNICATION
+
+        registrarMonitorAudio()
+
+        garantirRotaIntercom()
+
         reconhecedor =
             SpeechRecognizer.createSpeechRecognizer(
                 contextoAplicacao
             )
 
-        reconhecedor?.setRecognitionListener(
-            criarListener()
-        )
+        reconhecedor
+            ?.setRecognitionListener(
+                criarListener()
+            )
 
         Log.d(
             "GARUPA_OUVIDO",
@@ -81,54 +184,412 @@ class Ouvido(
         )
     }
 
+    /*
+     * =========================================================
+     * ESCUTA CONTÍNUA
+     * =========================================================
+     */
+
     fun comecarEscutaContinua() {
 
-        if (
-            reconhecedor == null
-        ) {
+        /*
+         * IMPORTANTE:
+         *
+         * Este método pode ser chamado pelo callback do TTS,
+         * que não necessariamente roda na MAIN THREAD.
+         *
+         * SpeechRecognizer.startListening() só pode acontecer
+         * na thread principal.
+         */
+        handler.post {
 
-            iniciar()
+            if (
+                reconhecedor == null
+            ) {
+
+                iniciar()
+            }
+
+            if (
+                reconhecedor == null
+            ) {
+
+                Log.e(
+                    "GARUPA_OUVIDO",
+                    "❌ Não foi possível iniciar reconhecimento"
+                )
+
+                return@post
+            }
+
+            deveContinuarEscutando =
+                true
+
+            garantirRotaIntercom()
+
+            iniciarNovaEscuta()
         }
-
-        if (
-            reconhecedor == null
-        ) {
-
-            return
-        }
-
-        deveContinuarEscutando =
-            true
-
-        iniciarNovaEscuta()
     }
 
     fun pararEscuta() {
 
-        deveContinuarEscutando =
-            false
+        /*
+         * Também precisa ocorrer na MAIN THREAD.
+         */
+        handler.post {
 
-        escutando =
-            false
+            deveContinuarEscutando =
+                false
 
-        handler.removeCallbacksAndMessages(
-            null
-        )
+            escutando =
+                false
+
+            /*
+             * Não usamos:
+             *
+             * removeCallbacksAndMessages(null)
+             *
+             * aqui.
+             *
+             * Isso poderia apagar callbacks importantes,
+             * inclusive a retomada do Ouvido depois do TTS.
+             */
+            try {
+
+                reconhecedor
+                    ?.stopListening()
+
+            } catch (
+                erro: Exception
+            ) {
+
+                Log.e(
+                    "GARUPA_OUVIDO",
+                    "⚠️ Erro ao pausar reconhecimento",
+                    erro
+                )
+            }
+
+            liberarRotaComunicacao()
+
+            Log.d(
+                "GARUPA_OUVIDO",
+                "🔇 Escuta pausada"
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * ROTA BLUETOOTH / INTERCOM
+     * =========================================================
+     */
+
+    private fun garantirRotaIntercom() {
 
         try {
 
-            reconhecedor?.stopListening()
+            audioManager.mode =
+                AudioManager.MODE_IN_COMMUNICATION
 
-        } catch (_: Exception) {
+            /*
+             * Android 12+
+             *
+             * API moderna para selecionar dispositivo
+             * de comunicação.
+             */
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.S
+            ) {
+
+                if (
+                    !temPermissaoBluetooth()
+                ) {
+
+                    Log.d(
+                        "GARUPA_BLUETOOTH",
+                        "⚠️ BLUETOOTH_CONNECT ainda não autorizado"
+                    )
+
+                    return
+                }
+
+                val dispositivos =
+                    audioManager
+                        .availableCommunicationDevices
+
+                /*
+                 * Intercomunicadores normalmente aparecem
+                 * como Bluetooth SCO/HFP.
+                 *
+                 * BLE_HEADSET fica como segunda opção.
+                 */
+                val intercom =
+                    dispositivos
+                        .firstOrNull { dispositivo ->
+
+                            dispositivo.type ==
+                                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                        }
+                        ?: dispositivos
+                            .firstOrNull { dispositivo ->
+
+                                dispositivo.type ==
+                                        AudioDeviceInfo.TYPE_BLE_HEADSET
+                            }
+
+                if (
+                    intercom != null
+                ) {
+
+                    val atual =
+                        audioManager.communicationDevice
+
+                    /*
+                     * Se o intercom já estiver selecionado,
+                     * não precisamos forçar a rota novamente.
+                     */
+                    if (
+                        atual?.id ==
+                        intercom.id
+                    ) {
+
+                        Log.v(
+                            "GARUPA_BLUETOOTH",
+                            "🎧 Intercom já está selecionado"
+                        )
+
+                        return
+                    }
+
+                    val selecionado =
+                        audioManager
+                            .setCommunicationDevice(
+                                intercom
+                            )
+
+                    if (
+                        selecionado
+                    ) {
+
+                        Log.d(
+                            "GARUPA_BLUETOOTH",
+                            "✅ Intercom selecionado | " +
+                                    "tipo=${intercom.type} | " +
+                                    "id=${intercom.id}"
+                        )
+
+                    } else {
+
+                        Log.d(
+                            "GARUPA_BLUETOOTH",
+                            "⚠️ Android recusou seleção do intercom"
+                        )
+                    }
+
+                } else {
+
+                    Log.d(
+                        "GARUPA_BLUETOOTH",
+                        "ℹ️ Nenhum intercom disponível; usando microfone padrão"
+                    )
+                }
+
+                return
+            }
+
+            /*
+             * Android 10 e 11.
+             */
+            @Suppress("DEPRECATION")
+            audioManager.startBluetoothSco()
+
+            @Suppress("DEPRECATION")
+            run {
+
+                audioManager.isBluetoothScoOn =
+                    true
+            }
+
+            Log.d(
+                "GARUPA_BLUETOOTH",
+                "🎧 Bluetooth SCO solicitado"
+            )
+
+        } catch (
+            erro: SecurityException
+        ) {
+
+            Log.e(
+                "GARUPA_BLUETOOTH",
+                "❌ Sem permissão para controlar Bluetooth",
+                erro
+            )
+
+        } catch (
+            erro: Exception
+        ) {
+
+            Log.e(
+                "GARUPA_BLUETOOTH",
+                "❌ Erro ao selecionar intercom",
+                erro
+            )
         }
-
-        Log.d(
-            "GARUPA_OUVIDO",
-            "🔇 Escuta pausada"
-        )
     }
 
+    private fun liberarRotaComunicacao() {
+
+        try {
+
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.S
+            ) {
+
+                audioManager
+                    .clearCommunicationDevice()
+
+            } else {
+
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+
+                @Suppress("DEPRECATION")
+                run {
+
+                    audioManager.isBluetoothScoOn =
+                        false
+                }
+            }
+
+        } catch (
+            erro: Exception
+        ) {
+
+            Log.e(
+                "GARUPA_BLUETOOTH",
+                "⚠️ Erro ao liberar rota de comunicação",
+                erro
+            )
+        }
+    }
+
+    private fun temPermissaoBluetooth():
+            Boolean {
+
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.S
+        ) {
+
+            return true
+        }
+
+        return ContextCompat
+            .checkSelfPermission(
+                contextoAplicacao,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) ==
+                PackageManager.PERMISSION_GRANTED
+    }
+
+    /*
+     * =========================================================
+     * MONITORAMENTO DOS DISPOSITIVOS
+     * =========================================================
+     */
+
+    private fun registrarMonitorAudio() {
+
+        if (
+            callbackAudioRegistrado
+        ) {
+            return
+        }
+
+        try {
+
+            audioManager
+                .registerAudioDeviceCallback(
+                    callbackAudio,
+                    handler
+                )
+
+            callbackAudioRegistrado =
+                true
+
+            Log.d(
+                "GARUPA_BLUETOOTH",
+                "👀 Monitor de dispositivos de áudio ativo"
+            )
+
+        } catch (
+            erro: Exception
+        ) {
+
+            Log.e(
+                "GARUPA_BLUETOOTH",
+                "❌ Falha ao registrar monitor de áudio",
+                erro
+            )
+        }
+    }
+
+    private fun removerMonitorAudio() {
+
+        if (
+            !callbackAudioRegistrado
+        ) {
+            return
+        }
+
+        try {
+
+            audioManager
+                .unregisterAudioDeviceCallback(
+                    callbackAudio
+                )
+
+        } catch (
+            erro: Exception
+        ) {
+
+            Log.e(
+                "GARUPA_BLUETOOTH",
+                "⚠️ Erro ao remover monitor de áudio",
+                erro
+            )
+        }
+
+        callbackAudioRegistrado =
+            false
+    }
+
+    /*
+     * =========================================================
+     * NOVA JANELA DE ESCUTA
+     * =========================================================
+     */
+
     private fun iniciarNovaEscuta() {
+
+        /*
+         * Segurança extra:
+         * nunca manipulamos SpeechRecognizer fora da main.
+         */
+        if (
+            Looper.myLooper() !=
+            Looper.getMainLooper()
+        ) {
+
+            handler.post {
+                iniciarNovaEscuta()
+            }
+
+            return
+        }
 
         if (
             !deveContinuarEscutando ||
@@ -137,6 +598,12 @@ class Ouvido(
 
             return
         }
+
+        /*
+         * A cada nova janela de reconhecimento,
+         * reforçamos a rota do intercom.
+         */
+        garantirRotaIntercom()
 
         val intent =
             Intent(
@@ -174,16 +641,19 @@ class Ouvido(
             escutando =
                 true
 
-            reconhecedor?.startListening(
-                intent
-            )
+            reconhecedor
+                ?.startListening(
+                    intent
+                )
 
             Log.d(
                 "GARUPA_OUVIDO",
                 "👂 Escutando..."
             )
 
-        } catch (erro: Exception) {
+        } catch (
+            erro: Exception
+        ) {
 
             escutando =
                 false
@@ -200,6 +670,12 @@ class Ouvido(
         }
     }
 
+    /*
+     * =========================================================
+     * SPEECH RECOGNIZER
+     * =========================================================
+     */
+
     private fun criarListener():
             RecognitionListener {
 
@@ -214,6 +690,8 @@ class Ouvido(
                     "GARUPA_OUVIDO",
                     "🎙️ Pode falar"
                 )
+
+                logarRotaAtual()
             }
 
             override fun onBeginningOfSpeech() {
@@ -227,7 +705,11 @@ class Ouvido(
             override fun onRmsChanged(
                 rmsdB: Float
             ) {
-                // Não logamos para evitar poluir o Logcat.
+
+                /*
+                 * Não logamos continuamente para
+                 * não poluir o Logcat.
+                 */
             }
 
             override fun onBufferReceived(
@@ -251,10 +733,8 @@ class Ouvido(
                     false
 
                 /*
-                 * Erros 6 e 7 são comuns quando ninguém fala
-                 * ou quando nenhuma frase é reconhecida.
-                 *
-                 * Não são falhas graves na escuta contínua.
+                 * Timeout e NO_MATCH são normais
+                 * na escuta contínua.
                  */
                 if (
                     error !=
@@ -269,9 +749,6 @@ class Ouvido(
                     )
                 }
 
-                /*
-                 * Falta de permissão não deve gerar loop.
-                 */
                 if (
                     error ==
                     SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS
@@ -287,6 +764,12 @@ class Ouvido(
 
                     return
                 }
+
+                /*
+                 * O Android pode ter alterado a rota Bluetooth.
+                 * Reforçamos antes da próxima escuta.
+                 */
+                garantirRotaIntercom()
 
                 agendarNovaEscuta(
                     700L
@@ -321,9 +804,10 @@ class Ouvido(
                         "🧠 Você disse: $frase"
                     )
 
-                    aoReconhecerFala?.invoke(
-                        frase
-                    )
+                    aoReconhecerFala
+                        ?.invoke(
+                            frase
+                        )
                 }
 
                 agendarNovaEscuta(
@@ -362,6 +846,63 @@ class Ouvido(
         }
     }
 
+    /*
+     * =========================================================
+     * DIAGNÓSTICO DA ROTA
+     * =========================================================
+     */
+
+    private fun logarRotaAtual() {
+
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.S
+        ) {
+            return
+        }
+
+        try {
+
+            val atual =
+                audioManager.communicationDevice
+
+            if (
+                atual != null
+            ) {
+
+                Log.d(
+                    "GARUPA_BLUETOOTH",
+                    "🎙️ Rota atual | " +
+                            "tipo=${atual.type} | " +
+                            "id=${atual.id}"
+                )
+
+            } else {
+
+                Log.d(
+                    "GARUPA_BLUETOOTH",
+                    "🎙️ Nenhum dispositivo de comunicação explicitamente selecionado"
+                )
+            }
+
+        } catch (
+            erro: Exception
+        ) {
+
+            Log.e(
+                "GARUPA_BLUETOOTH",
+                "⚠️ Não foi possível consultar rota atual",
+                erro
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * REINÍCIO AUTOMÁTICO
+     * =========================================================
+     */
+
     private fun agendarNovaEscuta(
         atrasoMs: Long
     ) {
@@ -374,39 +915,89 @@ class Ouvido(
 
         handler.postDelayed(
             {
-                iniciarNovaEscuta()
+
+                if (
+                    deveContinuarEscutando
+                ) {
+
+                    iniciarNovaEscuta()
+                }
+
             },
             atrasoMs
         )
     }
 
+    /*
+     * =========================================================
+     * ENCERRAMENTO
+     * =========================================================
+     */
+
     fun encerrar() {
 
-        deveContinuarEscutando =
-            false
+        /*
+         * cancel(), destroy() e mudanças de rota
+         * também devem ocorrer na MAIN THREAD.
+         */
+        handler.post {
 
-        escutando =
-            false
+            deveContinuarEscutando =
+                false
 
-        handler.removeCallbacksAndMessages(
-            null
-        )
+            escutando =
+                false
 
-        try {
+            handler.removeCallbacksAndMessages(
+                null
+            )
 
-            reconhecedor?.cancel()
+            try {
 
-        } catch (_: Exception) {
+                reconhecedor
+                    ?.cancel()
+
+            } catch (
+                erro: Exception
+            ) {
+
+                Log.e(
+                    "GARUPA_OUVIDO",
+                    "⚠️ Erro ao cancelar reconhecimento",
+                    erro
+                )
+            }
+
+            try {
+
+                reconhecedor
+                    ?.destroy()
+
+            } catch (
+                erro: Exception
+            ) {
+
+                Log.e(
+                    "GARUPA_OUVIDO",
+                    "⚠️ Erro ao destruir reconhecimento",
+                    erro
+                )
+            }
+
+            reconhecedor =
+                null
+
+            removerMonitorAudio()
+
+            liberarRotaComunicacao()
+
+            audioManager.mode =
+                AudioManager.MODE_NORMAL
+
+            Log.d(
+                "GARUPA_OUVIDO",
+                "🎤 Ouvido encerrado"
+            )
         }
-
-        reconhecedor?.destroy()
-
-        reconhecedor =
-            null
-
-        Log.d(
-            "GARUPA_OUVIDO",
-            "🎤 Ouvido encerrado"
-        )
     }
 }

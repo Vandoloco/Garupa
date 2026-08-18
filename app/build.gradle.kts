@@ -55,6 +55,25 @@ dependencies {
     // Localização atual do piloto
     implementation("com.google.android.gms:play-services-location:21.3.0")
 
+    // IA local - LiteRT-LM
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.14.0")
+
+    /*
+     * IMPORTANTE
+     *
+     * LiteRT-LM 0.14.0 foi compilado esperando
+     * kotlinx-coroutines 1.11.0.
+     *
+     * Sem esta versão ocorre:
+     *
+     * NoSuchMethodError:
+     * SendChannel.close$default(...)
+     *
+     * ao finalizar sendMessageAsync().
+     */
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
     testImplementation(libs.junit)
 
     androidTestImplementation(platform(libs.androidx.compose.bom))
@@ -64,4 +83,23 @@ dependencies {
 
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+/*
+ * Força todas as dependências transitivas a usarem
+ * a mesma versão de coroutines.
+ *
+ * Isso evita que alguma biblioteca traga 1.9.x
+ * ou 1.10.x e cause o crash do LiteRT-LM.
+ */
+configurations.configureEach {
+
+    resolutionStrategy {
+
+        force(
+            "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0",
+            "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.11.0",
+            "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0"
+        )
+    }
 }

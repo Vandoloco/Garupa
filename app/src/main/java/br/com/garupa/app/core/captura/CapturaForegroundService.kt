@@ -17,8 +17,10 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import br.com.garupa.app.core.Garupa
 import br.com.garupa.app.core.leitura.LeitorTela
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
 import java.io.File
@@ -51,6 +53,17 @@ class CapturaForegroundService : Service() {
 
     private lateinit var handlerThread: HandlerThread
     private lateinit var handler: Handler
+
+    /*
+     * Mantém a CPU disponível quando a tela apaga.
+     *
+     * O Foreground Service mantém o processo prioritário,
+     * enquanto este WakeLock evita que o aparelho suspenda
+     * o processamento do Ouvido durante o turno.
+     */
+    private var wakeLock:
+            PowerManager.WakeLock? =
+        null
 
     private lateinit var leitorTela: LeitorTela
 
@@ -119,7 +132,24 @@ class CapturaForegroundService : Service() {
 
         criarCanalNotificacao()
 
+        /*
+         * O serviço entra em foreground antes de ativar
+         * qualquer recurso sensível de background.
+         */
         iniciarForeground()
+
+        /*
+         * Mantém o processamento ativo mesmo com a tela
+         * apagada durante o turno.
+         */
+        adquirirWakeLock()
+
+        /*
+         * O Ouvido passa a pertencer ao ciclo de vida
+         * do Foreground Service. Assim ele não depende
+         * da MainActivity permanecer visível.
+         */
+        iniciarOuvidoContinua()
 
         handlerThread =
             HandlerThread(
@@ -210,6 +240,134 @@ class CapturaForegroundService : Service() {
         )
 
         return START_NOT_STICKY
+    }
+
+    /*
+     * =========================================================
+     * OUVIDO CONTÍNUO
+     * =========================================================
+     *
+     * O SpeechRecognizer continua pertencendo ao objeto Garupa,
+     * mas o Foreground Service mantém sua execução autorizada
+     * enquanto o app estiver trabalhando em background.
+     */
+    private fun iniciarOuvidoContinua() {
+
+        try {
+
+            Log.d(
+                "GARUPA_OUVIDO",
+                "🎧 Foreground Service mantendo Ouvido ativo"
+            )
+
+            Garupa.iniciarEscuta()
+
+        } catch (erro: Exception) {
+
+            Log.e(
+                "GARUPA_OUVIDO",
+                "❌ Erro ao iniciar Ouvido no Foreground Service",
+                erro
+            )
+        }
+    }
+
+    private fun pararOuvidoContinua() {
+
+        try {
+
+            Garupa.pararEscuta()
+
+            Log.d(
+                "GARUPA_OUVIDO",
+                "🔇 Foreground Service parou o Ouvido"
+            )
+
+        } catch (erro: Exception) {
+
+            Log.e(
+                "GARUPA_OUVIDO",
+                "❌ Erro ao parar Ouvido no Foreground Service",
+                erro
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * WAKE LOCK
+     * =========================================================
+     */
+
+    private fun adquirirWakeLock() {
+
+        if (
+            wakeLock?.isHeld ==
+            true
+        ) {
+            return
+        }
+
+        try {
+
+            val powerManager =
+                getSystemService(
+                    POWER_SERVICE
+                ) as PowerManager
+
+            wakeLock =
+                powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "Garupa:TurnoAtivo"
+                ).apply {
+
+                    setReferenceCounted(
+                        false
+                    )
+
+                    acquire()
+                }
+
+            Log.d(
+                "GARUPA_SERVICO",
+                "🔋 WakeLock adquirido para operação com tela apagada"
+            )
+
+        } catch (erro: Exception) {
+
+            Log.e(
+                "GARUPA_SERVICO",
+                "❌ Erro ao adquirir WakeLock",
+                erro
+            )
+        }
+    }
+
+    private fun liberarWakeLock() {
+
+        try {
+
+            if (
+                wakeLock?.isHeld ==
+                true
+            ) {
+
+                wakeLock?.release()
+            }
+
+        } catch (erro: Exception) {
+
+            Log.e(
+                "GARUPA_SERVICO",
+                "⚠️ Erro ao liberar WakeLock",
+                erro
+            )
+
+        } finally {
+
+            wakeLock =
+                null
+        }
     }
 
     /*
@@ -609,7 +767,7 @@ class CapturaForegroundService : Service() {
                     "Garupa ativo"
                 )
                 .setContentText(
-                    "Analisando ofertas e acompanhando sua posição"
+                    "Ouvindo, analisando ofertas e acompanhando sua posição"
                 )
                 .setSmallIcon(
                     android.R.drawable.ic_menu_mylocation
@@ -621,14 +779,41 @@ class CapturaForegroundService : Service() {
 
         if (
             Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.R
+        ) {
+
+            /*
+             * Android 11+:
+             *
+             * - mediaProjection
+             * - location
+             * - microphone
+             *
+             * O tipo microphone é o que permite ao Garupa
+             * continuar usando o microfone quando a tela
+             * apagar e a Activity deixar de estar visível.
+             */
+            val tipos =
+                ServiceInfo
+                    .FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                        ServiceInfo
+                            .FOREGROUND_SERVICE_TYPE_LOCATION or
+                        ServiceInfo
+                            .FOREGROUND_SERVICE_TYPE_MICROPHONE
+
+            startForeground(
+                NOTIFICATION_ID,
+                notificacao,
+                tipos
+            )
+
+        } else if (
+            Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.Q
         ) {
 
             /*
-             * O mesmo serviço agora declara:
-             *
-             * - mediaProjection
-             * - location
+             * API 29 não possui o tipo MICROPHONE.
              */
             val tipos =
                 ServiceInfo
@@ -691,10 +876,14 @@ class CapturaForegroundService : Service() {
             false
 
         /*
-         * Agora o serviço é dono também
-         * da atualização de A.
+         * O serviço é dono do ciclo de vida das capacidades
+         * que precisam continuar funcionando em background.
          */
+        pararOuvidoContinua()
+
         pararLocalizacaoContinua()
+
+        liberarWakeLock()
 
         liberarRecursosCaptura(
             liberarProjection =

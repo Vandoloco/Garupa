@@ -2,8 +2,10 @@ package br.com.garupa.app.core.voz
 
 import android.content.Context
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 class Voz(
     private val contexto: Context
@@ -12,12 +14,24 @@ class Voz(
     private var tts: TextToSpeech? =
         null
 
+    @Volatile
     private var pronta =
         false
 
+    /*
+     * Guarda callbacks associados a cada fala.
+     *
+     * Quando o Android informa que aquela fala terminou,
+     * executamos o callback correspondente.
+     */
+    private val callbacksFim =
+        ConcurrentHashMap<String, () -> Unit>()
+
     fun iniciar() {
 
-        if (tts != null) {
+        if (
+            tts != null
+        ) {
             return
         }
 
@@ -30,6 +44,8 @@ class Voz(
                     status ==
                     TextToSpeech.SUCCESS
                 ) {
+
+                    configurarListener()
 
                     val resultadoIdioma =
                         tts?.setLanguage(
@@ -45,7 +61,9 @@ class Voz(
                                 resultadoIdioma !=
                                 TextToSpeech.LANG_NOT_SUPPORTED
 
-                    if (pronta) {
+                    if (
+                        pronta
+                    ) {
 
                         Log.d(
                             "GARUPA_VOZ",
@@ -74,6 +92,125 @@ class Voz(
             }
     }
 
+    /*
+     * =========================================================
+     * CALLBACK REAL DO TTS
+     * =========================================================
+     */
+
+    private fun configurarListener() {
+
+        tts?.setOnUtteranceProgressListener(
+
+            object :
+                UtteranceProgressListener() {
+
+                override fun onStart(
+                    utteranceId: String?
+                ) {
+
+                    if (
+                        utteranceId != null
+                    ) {
+
+                        Log.d(
+                            "GARUPA_VOZ",
+                            "▶️ Fala iniciada | id=$utteranceId"
+                        )
+                    }
+                }
+
+                override fun onDone(
+                    utteranceId: String?
+                ) {
+
+                    if (
+                        utteranceId == null
+                    ) {
+                        return
+                    }
+
+                    Log.d(
+                        "GARUPA_VOZ",
+                        "✅ Fala concluída | id=$utteranceId"
+                    )
+
+                    executarCallbackFim(
+                        utteranceId
+                    )
+                }
+
+                @Deprecated(
+                    "Método legado exigido pela interface Android"
+                )
+                override fun onError(
+                    utteranceId: String?
+                ) {
+
+                    if (
+                        utteranceId == null
+                    ) {
+                        return
+                    }
+
+                    Log.e(
+                        "GARUPA_VOZ",
+                        "❌ Erro durante fala | id=$utteranceId"
+                    )
+
+                    /*
+                     * Mesmo se o TTS falhar,
+                     * devolvemos o Ouvido para não deixar
+                     * o Garupa permanentemente surdo.
+                     */
+                    executarCallbackFim(
+                        utteranceId
+                    )
+                }
+
+                override fun onError(
+                    utteranceId: String?,
+                    errorCode: Int
+                ) {
+
+                    if (
+                        utteranceId == null
+                    ) {
+                        return
+                    }
+
+                    Log.e(
+                        "GARUPA_VOZ",
+                        "❌ Erro durante fala | " +
+                                "id=$utteranceId | " +
+                                "codigo=$errorCode"
+                    )
+
+                    executarCallbackFim(
+                        utteranceId
+                    )
+                }
+            }
+        )
+    }
+
+    private fun executarCallbackFim(
+        utteranceId: String
+    ) {
+
+        callbacksFim
+            .remove(
+                utteranceId
+            )
+            ?.invoke()
+    }
+
+    /*
+     * =========================================================
+     * DECISÕES
+     * =========================================================
+     */
+
     fun anunciarAceitar() {
 
         falarDecisao(
@@ -94,7 +231,9 @@ class Voz(
         mensagem: String
     ) {
 
-        if (!pronta) {
+        if (
+            !pronta
+        ) {
 
             Log.d(
                 "GARUPA_VOZ",
@@ -104,45 +243,128 @@ class Voz(
             return
         }
 
+        val id =
+            "GARUPA_DECISAO_${System.currentTimeMillis()}"
+
         Log.d(
             "GARUPA_VOZ",
             "🔊 $mensagem"
         )
 
         /*
-         * QUEUE_FLUSH é proposital.
-         *
-         * A decisão é mais importante que qualquer
-         * mensagem que ainda esteja aguardando.
+         * Decisão continua tendo prioridade
+         * sobre qualquer fala na fila.
          */
         tts?.speak(
             mensagem,
             TextToSpeech.QUEUE_FLUSH,
             null,
-            "GARUPA_DECISAO"
+            id
         )
     }
 
+    /*
+     * =========================================================
+     * CONVERSA NORMAL
+     * =========================================================
+     */
+
     fun falar(
-        mensagem: String
+        mensagem: String,
+        aoTerminar: (() -> Unit)? = null
     ) {
 
-        if (!pronta) {
+        val mensagemLimpa =
+            mensagem
+                .trim()
+
+        if (
+            mensagemLimpa.isBlank()
+        ) {
+
+            aoTerminar?.invoke()
+
             return
         }
 
-        tts?.speak(
-            mensagem,
-            TextToSpeech.QUEUE_ADD,
-            null,
+        if (
+            !pronta
+        ) {
+
+            Log.d(
+                "GARUPA_VOZ",
+                "⚠️ Voz ainda não está pronta"
+            )
+
+            aoTerminar?.invoke()
+
+            return
+        }
+
+        val id =
             "GARUPA_${System.currentTimeMillis()}"
+
+        if (
+            aoTerminar != null
+        ) {
+
+            callbacksFim[
+                id
+            ] =
+                aoTerminar
+        }
+
+        Log.d(
+            "GARUPA_VOZ",
+            "🔊 Falando: $mensagemLimpa"
         )
+
+        val resultado =
+            tts?.speak(
+                mensagemLimpa,
+                TextToSpeech.QUEUE_ADD,
+                null,
+                id
+            )
+
+        if (
+            resultado ==
+            TextToSpeech.ERROR
+        ) {
+
+            Log.e(
+                "GARUPA_VOZ",
+                "❌ TTS recusou a fala"
+            )
+
+            executarCallbackFim(
+                id
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * CONTROLE
+     * =========================================================
+     */
+
+    fun pararFala() {
+
+        try {
+
+            tts?.stop()
+
+        } catch (_: Exception) {
+        }
     }
 
     fun encerrar() {
 
         pronta =
             false
+
+        callbacksFim.clear()
 
         tts?.stop()
         tts?.shutdown()

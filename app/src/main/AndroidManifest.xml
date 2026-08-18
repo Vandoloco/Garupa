@@ -5,13 +5,33 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
-    <!-- Microfone / Ouvido do Garupa -->
+    <!-- Microfone -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Controle da rota de áudio -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- Bluetooth antigo: Android 11 ou inferior -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
+    <!-- Bluetooth Android 12+ -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Tela apagada -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- Foreground services -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <application
         android:allowBackup="true"
@@ -22,6 +42,15 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Garupa">
+
+        <!-- LiteRT-LM / GPU -->
+        <uses-native-library
+            android:name="libvndksupport.so"
+            android:required="false" />
+
+        <uses-native-library
+            android:name="libOpenCL.so"
+            android:required="false" />
 
         <activity
             android:name=".MainActivity"
@@ -55,7 +84,7 @@
         <service
             android:name=".core.captura.CapturaForegroundService"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|location" />
+            android:foregroundServiceType="mediaProjection|location|microphone" />
 
     </application>
 

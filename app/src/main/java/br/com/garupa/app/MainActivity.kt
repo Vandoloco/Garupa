@@ -31,6 +31,37 @@ class MainActivity : ComponentActivity() {
 
     /*
      * =========================================================
+     * BLUETOOTH
+     * =========================================================
+     */
+
+    private val pedidoBluetooth =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { concedida ->
+
+            if (
+                concedida
+            ) {
+
+                Log.d(
+                    "GARUPA_BLUETOOTH",
+                    "🎧 Permissão Bluetooth concedida"
+                )
+
+            } else {
+
+                Log.d(
+                    "GARUPA_BLUETOOTH",
+                    "⚠️ Bluetooth não autorizado; Garupa poderá usar microfone do celular"
+                )
+            }
+
+            verificarPermissaoMicrofone()
+        }
+
+    /*
+     * =========================================================
      * MICROFONE
      * =========================================================
      */
@@ -59,10 +90,6 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            /*
-             * Independente da decisão sobre o microfone,
-             * seguimos normalmente com localização/captura.
-             */
             verificarPermissaoLocalizacao()
         }
 
@@ -112,7 +139,7 @@ class MainActivity : ComponentActivity() {
 
     /*
      * =========================================================
-     * CAPTURA DA TELA
+     * CAPTURA
      * =========================================================
      */
 
@@ -219,7 +246,51 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        verificarPermissaoMicrofone()
+        verificarPermissaoBluetooth()
+    }
+
+    /*
+     * =========================================================
+     * BLUETOOTH
+     * =========================================================
+     */
+
+    private fun verificarPermissaoBluetooth() {
+
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.S
+        ) {
+
+            verificarPermissaoMicrofone()
+
+            return
+        }
+
+        val permissao =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+
+        if (
+            permissao ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+
+            Log.d(
+                "GARUPA_BLUETOOTH",
+                "🎧 Bluetooth já autorizado"
+            )
+
+            verificarPermissaoMicrofone()
+
+        } else {
+
+            pedidoBluetooth.launch(
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        }
     }
 
     /*
@@ -325,12 +396,6 @@ class MainActivity : ComponentActivity() {
                 iniciarPedidoCaptura()
             }
     }
-
-    /*
-     * =========================================================
-     * CAPTURA
-     * =========================================================
-     */
 
     private fun iniciarPedidoCaptura() {
 
