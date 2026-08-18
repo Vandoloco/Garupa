@@ -1575,6 +1575,27 @@ class LeitorTela(
                     ofertaTemporaria.distanciaTotal != null &&
                     possuiParadasSuficientes
 
+        /*
+         * Publica uma CÓPIA do estado visual atual para os Olhos
+         * pertencentes ao próprio Garupa.
+         *
+         * O LeitorTela continua dono da lógica operacional da oferta;
+         * os Olhos recebem apenas um retrato do estado para contexto
+         * cognitivo, sem compartilhar a lista mutável original.
+         */
+        Garupa
+            .obterOlhos()
+            .observarOferta(
+                ofertaTemporaria.copy(
+                    paradas =
+                        ofertaTemporaria.paradas
+                            .map { parada ->
+                                parada.copy()
+                            }
+                            .toMutableList()
+                )
+            )
+
         if (
             ofertaTemporaria.completa
         ) {
@@ -1940,7 +1961,7 @@ class LeitorTela(
                 ignoreCase = true
             ) -> {
 
-                Garupa.obterVoz()?.anunciarDeixarPassar()
+                Garupa.anunciarDeixarPassar()
             }
 
             sugestao.contains(
@@ -1948,7 +1969,7 @@ class LeitorTela(
                 ignoreCase = true
             ) -> {
 
-                Garupa.obterVoz()?.anunciarAceitar()
+                Garupa.anunciarAceitar()
             }
 
             else -> {

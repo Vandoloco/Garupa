@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import br.com.garupa.app.core.cerebro.GarupaCerebro
+import br.com.garupa.app.core.cerebro.MotorInteligenciaGemini
 import br.com.garupa.app.core.cerebro.MotorInteligenciaLocal
 import br.com.garupa.app.core.memoria.Memoria
 import br.com.garupa.app.core.olhos.Olhos
@@ -13,14 +14,6 @@ import br.com.garupa.app.core.voz.Voz
 
 object Garupa {
 
-    /*
-     * Pequeno intervalo depois que o TTS termina.
-     *
-     * Evita capturar:
-     * - final da própria voz do Garupa;
-     * - reverberação do intercom;
-     * - transientes produzidos pela troca da rota de áudio.
-     */
     private const val COOLDOWN_APOS_FALA_MS =
         1000L
 
@@ -50,11 +43,9 @@ object Garupa {
             MotorInteligenciaLocal? =
         null
 
-    /*
-     * =========================================================
-     * ESTADO DA CONVERSA
-     * =========================================================
-     */
+    private var motorInteligenciaGemini:
+            MotorInteligenciaGemini? =
+        null
 
     @Volatile
     private var processandoFala =
@@ -62,6 +53,10 @@ object Garupa {
 
     @Volatile
     private var garupaFalando =
+        false
+
+    @Volatile
+    private var decisaoOperacionalFalando =
         false
 
     @Volatile
@@ -127,14 +122,10 @@ object Garupa {
                     novoOuvido
                         .definirAoReconhecerFala { frase ->
 
-                            /*
-                             * Se alguma resposta residual do
-                             * SpeechRecognizer aparecer enquanto
-                             * o Garupa estiver ocupado, ignoramos.
-                             */
                             if (
                                 processandoFala ||
                                 garupaFalando ||
+                                decisaoOperacionalFalando ||
                                 aguardandoCooldown
                             ) {
 
@@ -157,7 +148,7 @@ object Garupa {
 
         /*
          * =====================================================
-         * INTELIGÊNCIA LOCAL
+         * GEMMA LOCAL
          * =====================================================
          */
 
@@ -185,18 +176,44 @@ object Garupa {
 
                         Log.d(
                             "GARUPA_IA_LOCAL",
-                            "🧠 Motor de inteligência local disponível para o cérebro"
+                            "🧠 Motor local disponível"
                         )
 
                     } else {
 
                         Log.e(
                             "GARUPA_IA_LOCAL",
-                            "⚠️ Garupa continuará funcionando sem IA local"
+                            "⚠️ Motor local indisponível"
                         )
                     }
                 }
         }
+
+        /*
+         * =====================================================
+         * GEMINI ONLINE
+         * =====================================================
+         */
+
+        if (
+            motorInteligenciaGemini ==
+            null
+        ) {
+
+            motorInteligenciaGemini =
+                MotorInteligenciaGemini()
+
+            Log.d(
+                "GARUPA_GEMINI",
+                "☁️ Motor Gemini disponível para o cérebro"
+            )
+        }
+
+        /*
+         * =====================================================
+         * CÉREBRO
+         * =====================================================
+         */
 
         val respostaInicial =
             cerebro.iniciar()
@@ -214,7 +231,7 @@ object Garupa {
 
     /*
      * =========================================================
-     * RECEBIMENTO DA FALA DO PILOTO
+     * FALA DO PILOTO
      * =========================================================
      */
 
@@ -225,6 +242,7 @@ object Garupa {
         if (
             processandoFala ||
             garupaFalando ||
+            decisaoOperacionalFalando ||
             aguardandoCooldown
         ) {
 
@@ -253,22 +271,10 @@ object Garupa {
 
         /*
          * =====================================================
-         * TRAVA IMEDIATA
+         * PAUSA IMEDIATA DO OUVIDO
          * =====================================================
-         *
-         * Assim que conseguimos uma frase válida:
-         *
-         * OUVIDO FECHA.
-         *
-         * Não esperamos:
-         * - Gemma começar;
-         * - Gemma terminar;
-         * - TTS começar.
-         *
-         * Portanto, durante o tempo de inferência,
-         * vento/motor/conversas não entram como uma
-         * segunda pergunta.
          */
+
         processandoFala =
             true
 
@@ -299,17 +305,86 @@ object Garupa {
                 0.6
         )
 
-        val contextoAtual =
+        /*
+         * =====================================================
+         * CONTEXTO DA MEMÓRIA
+         * =====================================================
+         */
+
+        val contextoMemoria =
             memoria.construirContexto()
+
+        /*
+         * =====================================================
+         * CONTEXTO DOS OLHOS
+         * =====================================================
+         */
+
+        val contextoVisual =
+            olhos.construirContexto()
+
+        if (
+            contextoVisual.isNotBlank()
+        ) {
+
+            Log.d(
+                "GARUPA_CEREBRO_VISAO",
+                "👀 Contexto visual disponível:\n$contextoVisual"
+            )
+        }
+
+        /*
+         * =====================================================
+         * CONTEXTO COGNITIVO FINAL
+         * =====================================================
+         */
+
+        val contextoAtual =
+            buildString {
+
+                if (
+                    contextoMemoria.isNotBlank()
+                ) {
+
+                    appendLine(
+                        "MEMÓRIA DE CONVERSA:"
+                    )
+
+                    appendLine(
+                        contextoMemoria
+                    )
+                }
+
+                if (
+                    contextoVisual.isNotBlank()
+                ) {
+
+                    if (
+                        isNotBlank()
+                    ) {
+
+                        appendLine()
+                    }
+
+                    appendLine(
+                        "CONTEXTO VISUAL ATUAL:"
+                    )
+
+                    appendLine(
+                        contextoVisual
+                    )
+                }
+            }
+                .trim()
 
         Log.d(
             "GARUPA_CEREBRO_CONTEXTO",
-            "🧠 Contexto atual:\n$contextoAtual"
+            "🧠 Contexto cognitivo atual:\n$contextoAtual"
         )
 
         /*
          * =====================================================
-         * CÉREBRO / GEMMA
+         * CÉREBRO HÍBRIDO
          * =====================================================
          */
 
@@ -320,16 +395,15 @@ object Garupa {
             memoria =
                 contextoAtual,
 
-            motor =
+            motorLocal =
                 motorInteligenciaLocal,
+
+            motorGemini =
+                motorInteligenciaGemini,
 
             aoResponder =
                 resposta@ { respostaGerada ->
 
-                    /*
-                     * Se a IA não responder, precisamos
-                     * obrigatoriamente devolver o Ouvido.
-                     */
                     if (
                         respostaGerada.isNullOrBlank()
                     ) {
@@ -342,28 +416,21 @@ object Garupa {
                         processandoFala =
                             false
 
-                        iniciarCooldownERetomarOuvido()
+                        if (
+                            !decisaoOperacionalFalando
+                        ) {
+
+                            iniciarCooldownERetomarOuvido()
+                        }
 
                         return@resposta
                     }
 
-                    /*
-                     * Gemma terminou de pensar.
-                     *
-                     * Continuamos com o Ouvido fechado porque
-                     * agora o Garupa vai falar a resposta.
-                     */
                     processandoFala =
                         false
 
                     garupaFalando =
                         true
-
-                    /*
-                     * =================================================
-                     * MEMÓRIA DA RESPOSTA
-                     * =================================================
-                     */
 
                     memoria.lembrarConversa(
                         texto =
@@ -380,14 +447,8 @@ object Garupa {
 
                     Log.d(
                         "GARUPA_OUVIDO",
-                        "🔇 Gemma terminou; Ouvido permanece pausado durante TTS"
+                        "🔇 Resposta pronta; Ouvido permanece pausado durante TTS"
                     )
-
-                    /*
-                     * =================================================
-                     * TTS
-                     * =================================================
-                     */
 
                     voz?.falar(
                         mensagem =
@@ -404,11 +465,12 @@ object Garupa {
                                 garupaFalando =
                                     false
 
-                                /*
-                                 * Só depois do término REAL do TTS
-                                 * começamos o período de proteção.
-                                 */
-                                iniciarCooldownERetomarOuvido()
+                                if (
+                                    !decisaoOperacionalFalando
+                                ) {
+
+                                    iniciarCooldownERetomarOuvido()
+                                }
                             }
                     )
                 }
@@ -417,18 +479,175 @@ object Garupa {
 
     /*
      * =========================================================
-     * COOLDOWN + RETOMADA
+     * DECISÕES OPERACIONAIS
+     * =========================================================
+     */
+
+    fun anunciarAceitar() {
+
+        anunciarDecisaoOperacional(
+            aceitar =
+                true
+        )
+    }
+
+    fun anunciarDeixarPassar() {
+
+        anunciarDecisaoOperacional(
+            aceitar =
+                false
+        )
+    }
+
+    private fun anunciarDecisaoOperacional(
+        aceitar: Boolean
+    ) {
+
+        handlerPrincipal.post {
+
+            if (
+                decisaoOperacionalFalando
+            ) {
+
+                Log.d(
+                    "GARUPA_DECISAO_VOZ",
+                    "⏳ Decisão ignorada: outra decisão já está sendo anunciada"
+                )
+
+                return@post
+            }
+
+            val vozAtual =
+                voz
+
+            if (
+                vozAtual == null
+            ) {
+
+                Log.d(
+                    "GARUPA_DECISAO_VOZ",
+                    "⚠️ Voz ainda não está disponível"
+                )
+
+                return@post
+            }
+
+            decisaoOperacionalFalando =
+                true
+
+            aguardandoCooldown =
+                false
+
+            Log.d(
+                "GARUPA_DECISAO_VOZ",
+                if (
+                    aceitar
+                ) {
+                    "🔒 Pausando Ouvido para anunciar: ACEITAR"
+                } else {
+                    "🔒 Pausando Ouvido para anunciar: DEIXAR PASSAR"
+                }
+            )
+
+            /*
+             * pararEscuta() libera a rota de comunicação.
+             */
+            ouvido
+                ?.pararEscuta()
+
+            /*
+             * Dá tempo para MODE_NORMAL/rota normal
+             * estabilizarem antes do TTS.
+             */
+            handlerPrincipal.postDelayed(
+                {
+
+                    /*
+                     * IMPORTANTE:
+                     *
+                     * Tipagem explícita como () -> Unit.
+                     *
+                     * Sem isto o Kotlin pode inferir () -> Any
+                     * porque Log.d retorna Int.
+                     */
+                    val aoTerminarDecisao:
+                                () -> Unit =
+                        {
+
+                            Log.d(
+                                "GARUPA_DECISAO_VOZ",
+                                "✅ Decisão operacional falada por completo"
+                            )
+
+                            decisaoOperacionalFalando =
+                                false
+
+                            if (
+                                processandoFala ||
+                                garupaFalando
+                            ) {
+
+                                Log.d(
+                                    "GARUPA_DECISAO_VOZ",
+                                    "⏳ Ouvido continua pausado: cérebro/voz ainda ocupados"
+                                )
+
+                            } else {
+
+                                iniciarCooldownERetomarOuvido()
+                            }
+
+                            Unit
+                        }
+
+                    if (
+                        aceitar
+                    ) {
+
+                        vozAtual.anunciarAceitar(
+                            aoTerminar =
+                                aoTerminarDecisao
+                        )
+
+                    } else {
+
+                        vozAtual.anunciarDeixarPassar(
+                            aoTerminar =
+                                aoTerminarDecisao
+                        )
+                    }
+
+                },
+                150L
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * COOLDOWN
      * =========================================================
      */
 
     private fun iniciarCooldownERetomarOuvido() {
 
-        /*
-         * Evita agendar duas retomadas simultaneamente.
-         */
         if (
             aguardandoCooldown
         ) {
+
+            return
+        }
+
+        if (
+            processandoFala ||
+            garupaFalando ||
+            decisaoOperacionalFalando
+        ) {
+
+            Log.d(
+                "GARUPA_OUVIDO",
+                "⏳ Cooldown adiado: Garupa continua ocupado"
+            )
 
             return
         }
@@ -444,13 +663,10 @@ object Garupa {
         handlerPrincipal.postDelayed(
             {
 
-                /*
-                 * Se outra operação tiver começado nesse
-                 * intervalo, não devemos abrir o microfone.
-                 */
                 if (
                     processandoFala ||
-                    garupaFalando
+                    garupaFalando ||
+                    decisaoOperacionalFalando
                 ) {
 
                     aguardandoCooldown =
@@ -491,6 +707,7 @@ object Garupa {
         if (
             processandoFala ||
             garupaFalando ||
+            decisaoOperacionalFalando ||
             aguardandoCooldown
         ) {
 
@@ -538,9 +755,21 @@ object Garupa {
         return memoria
     }
 
+    fun obterOlhos():
+            Olhos {
+
+        return olhos
+    }
+
     fun obterMotorInteligenciaLocal():
             MotorInteligenciaLocal? {
 
         return motorInteligenciaLocal
+    }
+
+    fun obterMotorInteligenciaGemini():
+            MotorInteligenciaGemini? {
+
+        return motorInteligenciaGemini
     }
 }

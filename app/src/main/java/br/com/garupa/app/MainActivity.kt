@@ -20,6 +20,8 @@ import br.com.garupa.app.core.captura.CapturaForegroundService
 import br.com.garupa.app.core.captura.CapturaTela
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
 import br.com.garupa.app.ui.theme.GarupaTheme
+import com.google.firebase.appcheck.FirebaseAppCheck
+import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 
 class MainActivity : ComponentActivity() {
 
@@ -203,6 +205,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    /*
+     * =========================================================
+     * ON CREATE
+     * =========================================================
+     */
+
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
@@ -210,6 +218,36 @@ class MainActivity : ComponentActivity() {
         super.onCreate(
             savedInstanceState
         )
+
+        /*
+         * =====================================================
+         * FIREBASE APP CHECK - DEBUG
+         * =====================================================
+         *
+         * Esta configuração é somente para desenvolvimento.
+         *
+         * Ao iniciar o app, o Firebase vai gerar um token
+         * de debug que cadastraremos no Console Firebase.
+         *
+         * Mais adiante, para produção, trocamos este provider
+         * por um provider real do App Check.
+         */
+        FirebaseAppCheck
+            .getInstance()
+            .installAppCheckProviderFactory(
+                DebugAppCheckProviderFactory.getInstance()
+            )
+
+        Log.d(
+            "GARUPA_FIREBASE",
+            "🔥 Firebase App Check DEBUG inicializado"
+        )
+
+        /*
+         * =====================================================
+         * GARUPA
+         * =====================================================
+         */
 
         Garupa.iniciar(
             this
@@ -396,6 +434,12 @@ class MainActivity : ComponentActivity() {
                 iniciarPedidoCaptura()
             }
     }
+
+    /*
+     * =========================================================
+     * CAPTURA DE TELA
+     * =========================================================
+     */
 
     private fun iniciarPedidoCaptura() {
 

@@ -82,7 +82,12 @@ class Ouvido(
 
                 handler.postDelayed(
                     {
-                        garantirRotaIntercom()
+                        if (
+                            deveContinuarEscutando
+                        ) {
+
+                            garantirRotaIntercom()
+                        }
                     },
                     500L
                 )
@@ -99,7 +104,12 @@ class Ouvido(
 
                 handler.postDelayed(
                     {
-                        garantirRotaIntercom()
+                        if (
+                            deveContinuarEscutando
+                        ) {
+
+                            garantirRotaIntercom()
+                        }
                     },
                     500L
                 )
@@ -158,15 +168,12 @@ class Ouvido(
         }
 
         /*
-         * O Android passa a tratar a sessão como
-         * comunicação de voz.
+         * O modo de comunicação e a rota do intercom
+         * só serão ativados quando a escuta realmente
+         * começar. Assim o Ouvido não mantém o TTS
+         * preso ao perfil de chamada enquanto está pausado.
          */
-        audioManager.mode =
-            AudioManager.MODE_IN_COMMUNICATION
-
         registrarMonitorAudio()
-
-        garantirRotaIntercom()
 
         reconhecedor =
             SpeechRecognizer.createSpeechRecognizer(
@@ -286,6 +293,19 @@ class Ouvido(
      */
 
     private fun garantirRotaIntercom() {
+
+        /*
+         * Nunca reativa o perfil de comunicação se o
+         * Ouvido estiver pausado. Isso evita uma corrida
+         * com callbacks tardios do SpeechRecognizer e do
+         * monitor de dispositivos enquanto o Garupa fala.
+         */
+        if (
+            !deveContinuarEscutando
+        ) {
+
+            return
+        }
 
         try {
 
@@ -463,6 +483,19 @@ class Ouvido(
                         false
                 }
             }
+
+            /*
+             * O TTS deve voltar ao perfil normal quando
+             * o Ouvido não está capturando voz. Sem isso,
+             * o Android pode manter EARPIECE/volume de chamada.
+             */
+            audioManager.mode =
+                AudioManager.MODE_NORMAL
+
+            Log.d(
+                "GARUPA_BLUETOOTH",
+                "🔈 Rota de comunicação liberada | modo=MODE_NORMAL"
+            )
 
         } catch (
             erro: Exception
@@ -766,14 +799,27 @@ class Ouvido(
                 }
 
                 /*
-                 * O Android pode ter alterado a rota Bluetooth.
-                 * Reforçamos antes da próxima escuta.
+                 * Um erro pode chegar depois de pararEscuta().
+                 * Nesse caso NÃO podemos reativar MODE_IN_COMMUNICATION,
+                 * porque o Garupa pode já estar falando pelo TTS.
                  */
-                garantirRotaIntercom()
+                if (
+                    deveContinuarEscutando
+                ) {
 
-                agendarNovaEscuta(
-                    700L
-                )
+                    garantirRotaIntercom()
+
+                    agendarNovaEscuta(
+                        700L
+                    )
+
+                } else {
+
+                    Log.d(
+                        "GARUPA_OUVIDO",
+                        "🔇 Callback de erro ignorado: escuta está pausada"
+                    )
+                }
             }
 
             override fun onResults(

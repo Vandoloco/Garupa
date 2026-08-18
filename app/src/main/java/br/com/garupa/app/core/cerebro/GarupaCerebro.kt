@@ -15,6 +15,16 @@ data class ContextoConversaGarupa(
 
 class GarupaCerebro {
 
+    companion object {
+
+        /*
+         * Esse marcador é criado pelo Garupa.kt quando existe
+         * visão válida e atual fornecida pelos Olhos.
+         */
+        private const val MARCADOR_CONTEXTO_VISUAL =
+            "CONTEXTO VISUAL ATUAL:"
+    }
+
     fun iniciar(): String {
 
         return Personalidade.saudacao()
@@ -22,24 +32,48 @@ class GarupaCerebro {
 
     /*
      * =========================================================
-     * ENTRADA COGNITIVA
+     * COMPATIBILIDADE COM O FLUXO ANTIGO
      * =========================================================
-     *
-     * O cérebro recebe:
-     *
-     * - fala atual;
-     * - memória disponível;
-     * - motor de raciocínio local.
-     *
-     * O Gemma NÃO é o Garupa.
-     *
-     * Ele é somente uma ferramenta de raciocínio
-     * utilizada pelo cérebro.
      */
+
     fun receberFala(
         fala: String,
         memoria: String,
         motor: MotorInteligenciaLocal?,
+        aoResponder: (
+            String?
+        ) -> Unit = {}
+    ) {
+
+        receberFala(
+            fala =
+                fala,
+
+            memoria =
+                memoria,
+
+            motorLocal =
+                motor,
+
+            motorGemini =
+                null,
+
+            aoResponder =
+                aoResponder
+        )
+    }
+
+    /*
+     * =========================================================
+     * ENTRADA COGNITIVA - DOIS MOTORES
+     * =========================================================
+     */
+
+    fun receberFala(
+        fala: String,
+        memoria: String,
+        motorLocal: MotorInteligenciaLocal?,
+        motorGemini: MotorInteligenciaGemini?,
         aoResponder: (
             String?
         ) -> Unit = {}
@@ -77,8 +111,11 @@ class GarupaCerebro {
             contexto =
                 contexto,
 
-            motor =
-                motor,
+            motorLocal =
+                motorLocal,
+
+            motorGemini =
+                motorGemini,
 
             aoResponder =
                 aoResponder
@@ -90,9 +127,11 @@ class GarupaCerebro {
      * PROCESSAMENTO
      * =========================================================
      */
+
     private fun processarContexto(
         contexto: ContextoConversaGarupa,
-        motor: MotorInteligenciaLocal?,
+        motorLocal: MotorInteligenciaLocal?,
+        motorGemini: MotorInteligenciaGemini?,
         aoResponder: (
             String?
         ) -> Unit
@@ -114,66 +153,170 @@ class GarupaCerebro {
 
             Log.d(
                 "GARUPA_CEREBRO",
-                "💭 Memória disponível:\n${contexto.memoria}"
+                "💭 Contexto disponível:\n${contexto.memoria}"
             )
         }
 
+        val possuiVisaoAtual =
+            possuiContextoVisualAtual(
+                contexto.memoria
+            )
+
+        Log.d(
+            "GARUPA_CEREBRO_VISAO_ESTADO",
+            if (
+                possuiVisaoAtual
+            ) {
+                "👀 Cérebro possui visão atual válida"
+            } else {
+                "🙈 Cérebro NÃO possui visão atual válida"
+            }
+        )
+
+        val prompt =
+            construirPrompt(
+                contexto =
+                    contexto,
+
+                possuiVisaoAtual =
+                    possuiVisaoAtual
+            )
+
         /*
-         * Se o motor ainda estiver carregando,
-         * o restante do Garupa continua funcionando.
+         * =====================================================
+         * GEMINI PRIMEIRO
+         * =====================================================
          */
+
         if (
-            motor == null ||
-            !motor.estaPronto()
+            motorGemini != null
         ) {
 
             Log.d(
-                "GARUPA_CEREBRO",
-                "⏳ Inteligência local ainda não disponível"
+                "GARUPA_CEREBRO_ROTEADOR",
+                "☁️ Tentando Gemini primeiro"
             )
 
-            aoResponder(
-                null
+            tentarGemini(
+                prompt =
+                    prompt,
+
+                motorGemini =
+                    motorGemini,
+
+                motorLocal =
+                    motorLocal,
+
+                aoResponder =
+                    aoResponder
             )
 
             return
         }
 
-        val prompt =
-            construirPrompt(
-                contexto
-            )
+        /*
+         * =====================================================
+         * SEM GEMINI → GEMMA LOCAL
+         * =====================================================
+         */
+
+        Log.d(
+            "GARUPA_CEREBRO_ROTEADOR",
+            "📱 Gemini não disponível; usando inteligência local"
+        )
+
+        tentarMotorLocal(
+            prompt =
+                prompt,
+
+            motorLocal =
+                motorLocal,
+
+            aoResponder =
+                aoResponder
+        )
+    }
+
+    /*
+     * =========================================================
+     * GEMINI
+     * =========================================================
+     */
+
+    private fun tentarGemini(
+        prompt: String,
+        motorGemini: MotorInteligenciaGemini,
+        motorLocal: MotorInteligenciaLocal?,
+        aoResponder: (
+            String?
+        ) -> Unit
+    ) {
 
         Log.d(
             "GARUPA_CEREBRO_PROMPT",
-            "🧠 Enviando contexto para inteligência local"
+            "☁️ Enviando contexto para Gemini"
         )
 
-        motor.gerarResposta(
+        motorGemini.gerarResposta(
             prompt =
                 prompt
-        ) { resposta ->
+        ) respostaGemini@ { resposta ->
 
             if (
                 resposta.isNullOrBlank()
             ) {
 
-                Log.d(
-                    "GARUPA_CEREBRO",
-                    "⚠️ Nenhuma resposta gerada"
+                Log.w(
+                    "GARUPA_CEREBRO_ROTEADOR",
+                    "⚠️ Gemini não respondeu; tentando Gemma local"
                 )
 
-                aoResponder(
-                    null
+                tentarMotorLocal(
+                    prompt =
+                        prompt,
+
+                    motorLocal =
+                        motorLocal,
+
+                    aoResponder =
+                        aoResponder
                 )
 
-                return@gerarResposta
+                return@respostaGemini
             }
 
             val respostaLimpa =
                 limparResposta(
                     resposta
                 )
+
+            if (
+                respostaLimpa.isBlank()
+            ) {
+
+                Log.w(
+                    "GARUPA_CEREBRO_ROTEADOR",
+                    "⚠️ Resposta Gemini ficou vazia após limpeza; tentando local"
+                )
+
+                tentarMotorLocal(
+                    prompt =
+                        prompt,
+
+                    motorLocal =
+                        motorLocal,
+
+                    aoResponder =
+                        aoResponder
+                )
+
+                return@respostaGemini
+            }
+
+            Log.d(
+                "GARUPA_CEREBRO_ROTEADOR",
+                "✅ Resposta escolhida | motor=GEMINI"
+            )
 
             Log.d(
                 "GARUPA_CEREBRO_RESPOSTA",
@@ -188,19 +331,147 @@ class GarupaCerebro {
 
     /*
      * =========================================================
-     * CONTEXTO PARA A INTELIGÊNCIA
+     * GEMMA LOCAL
      * =========================================================
-     *
-     * Não colocamos respostas prontas.
-     *
-     * O prompt descreve QUEM é o Garupa e fornece
-     * o contexto real disponível naquele momento.
      */
+
+    private fun tentarMotorLocal(
+        prompt: String,
+        motorLocal: MotorInteligenciaLocal?,
+        aoResponder: (
+            String?
+        ) -> Unit
+    ) {
+
+        if (
+            motorLocal == null
+        ) {
+
+            Log.e(
+                "GARUPA_CEREBRO_ROTEADOR",
+                "❌ Nenhum motor de inteligência disponível"
+            )
+
+            aoResponder(
+                null
+            )
+
+            return
+        }
+
+        if (
+            !motorLocal.estaPronto()
+        ) {
+
+            Log.d(
+                "GARUPA_CEREBRO_ROTEADOR",
+                "⏳ Gemma local ainda não está pronto"
+            )
+
+            aoResponder(
+                null
+            )
+
+            return
+        }
+
+        Log.d(
+            "GARUPA_CEREBRO_PROMPT",
+            "📱 Enviando contexto para Gemma local"
+        )
+
+        motorLocal.gerarResposta(
+            prompt =
+                prompt
+        ) respostaLocal@ { resposta ->
+
+            if (
+                resposta.isNullOrBlank()
+            ) {
+
+                Log.e(
+                    "GARUPA_CEREBRO_ROTEADOR",
+                    "❌ Gemma local também não respondeu"
+                )
+
+                aoResponder(
+                    null
+                )
+
+                return@respostaLocal
+            }
+
+            val respostaLimpa =
+                limparResposta(
+                    resposta
+                )
+
+            if (
+                respostaLimpa.isBlank()
+            ) {
+
+                Log.e(
+                    "GARUPA_CEREBRO_ROTEADOR",
+                    "❌ Resposta local ficou vazia após limpeza"
+                )
+
+                aoResponder(
+                    null
+                )
+
+                return@respostaLocal
+            }
+
+            Log.d(
+                "GARUPA_CEREBRO_ROTEADOR",
+                "✅ Resposta escolhida | motor=GEMMA_LOCAL"
+            )
+
+            Log.d(
+                "GARUPA_CEREBRO_RESPOSTA",
+                "💬 Garupa: $respostaLimpa"
+            )
+
+            aoResponder(
+                respostaLimpa
+            )
+        }
+    }
+
+    /*
+     * =========================================================
+     * ESTADO DA VISÃO
+     * =========================================================
+     */
+
+    private fun possuiContextoVisualAtual(
+        contexto: String
+    ): Boolean {
+
+        return contexto.contains(
+            MARCADOR_CONTEXTO_VISUAL,
+            ignoreCase = false
+        )
+    }
+
+    /*
+     * =========================================================
+     * CONTEXTO PARA OS MOTORES
+     * =========================================================
+     */
+
     private fun construirPrompt(
-        contexto: ContextoConversaGarupa
+        contexto: ContextoConversaGarupa,
+        possuiVisaoAtual: Boolean
     ): String {
 
         return buildString {
+
+            /*
+             * =================================================
+             * IDENTIDADE
+             * =================================================
+             */
 
             appendLine(
                 "Você é o Garupa."
@@ -254,12 +525,77 @@ class GarupaCerebro {
 
             appendLine()
 
+            /*
+             * =================================================
+             * REGRA COGNITIVA: MEMÓRIA ≠ VISÃO
+             * =================================================
+             */
+
+            appendLine(
+                "IMPORTANTE SOBRE MEMÓRIA E VISÃO:"
+            )
+
+            appendLine(
+                "A memória de conversa descreve acontecimentos anteriores."
+            )
+
+            appendLine(
+                "Uma lembrança sobre uma oferta antiga não significa que essa oferta ainda está na tela."
+            )
+
+            appendLine(
+                "Nunca use memória de conversa como prova do que está visível agora."
+            )
+
+            appendLine(
+                "Somente informações presentes na seção \"$MARCADOR_CONTEXTO_VISUAL\" representam aquilo que o Garupa está vendo neste momento."
+            )
+
+            if (
+                possuiVisaoAtual
+            ) {
+
+                appendLine(
+                    "Neste momento existe contexto visual atual válido."
+                )
+
+                appendLine(
+                    "Você pode usar os dados dessa seção para responder sobre o que está na tela."
+                )
+
+            } else {
+
+                appendLine(
+                    "Neste momento NÃO existe contexto visual atual válido."
+                )
+
+                appendLine(
+                    "Portanto, não afirme que está vendo na tela algo presente apenas na memória."
+                )
+
+                appendLine(
+                    "Se o piloto perguntar o que você está vendo agora, diga naturalmente que você não tem uma leitura visual atual da tela."
+                )
+
+                appendLine(
+                    "Não reconstrua a tela atual a partir de ofertas ou conversas anteriores."
+                )
+            }
+
+            appendLine()
+
+            /*
+             * =================================================
+             * CONTEXTO REAL
+             * =================================================
+             */
+
             if (
                 contexto.memoria.isNotBlank()
             ) {
 
                 appendLine(
-                    "Memória e contexto disponíveis:"
+                    "CONTEXTO DISPONÍVEL:"
                 )
 
                 appendLine(
@@ -268,6 +604,12 @@ class GarupaCerebro {
 
                 appendLine()
             }
+
+            /*
+             * =================================================
+             * FALA ATUAL
+             * =================================================
+             */
 
             appendLine(
                 "O piloto acabou de dizer:"
@@ -290,6 +632,7 @@ class GarupaCerebro {
      * LIMPEZA DA SAÍDA
      * =========================================================
      */
+
     private fun limparResposta(
         resposta: String
     ): String {
