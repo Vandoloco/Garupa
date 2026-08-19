@@ -23,11 +23,49 @@ class Olhos {
          */
         private const val VALIDADE_CONTEXTO_VISUAL_MS =
             10_000L
+
+        private const val PACOTE_IFOOD =
+            "br.com.ifood.driver.app"
+
+        private const val PACOTE_99FOOD =
+            "com.app99.driver"
+
+        private const val PACOTE_KEETA =
+            "com.sankuai.sailor.courier"
+
+        private const val PACOTE_WAZE =
+            "com.waze"
+
+        private const val PACOTE_MAPS =
+            "com.google.android.apps.maps"
+
+        /*
+         * Pacotes que podem aparecer por cima do aplicativo atual
+         * sem significar que o piloto realmente trocou de app.
+         */
+        private val PACOTES_TRANSITORIOS =
+            setOf(
+                "com.android.systemui",
+                "com.google.android.inputmethod.latin",
+                "com.android.permissioncontroller",
+                "com.google.android.permissioncontroller",
+                "br.com.garupa.app"
+            )
     }
 
     @Volatile
     private var contextoVisualAtual:
             ContextoVisualGarupa? =
+        null
+
+    @Volatile
+    private var pacoteAplicativoAtual:
+            String? =
+        null
+
+    @Volatile
+    private var nomeAplicativoAtual:
+            String? =
         null
 
     fun iniciar() {
@@ -50,6 +88,118 @@ class Olhos {
             distanciaAteRetirada = distanciaAteRetirada,
             distanciaRetiradaAteEntrega = distanciaRetiradaAteEntrega
         )
+    }
+
+    /*
+     * =========================================================
+     * APLICATIVO EM PRIMEIRO PLANO
+     * =========================================================
+     *
+     * O AccessibilityService informa o packageName real.
+     * Assim o Garupa não precisa adivinhar o aplicativo
+     * apenas pelos textos que o OCR encontrou.
+     *
+     * A visão geral fica restrita aos cinco aplicativos
+     * de trabalho definidos nesta versão.
+     */
+    fun observarAplicativo(
+        pacote: String
+    ) {
+
+        val pacoteLimpo =
+            pacote.trim()
+
+        if (
+            pacoteLimpo.isBlank()
+        ) {
+
+            return
+        }
+
+        if (
+            PACOTES_TRANSITORIOS.contains(
+                pacoteLimpo
+            )
+        ) {
+
+            return
+        }
+
+        val nomeReconhecido =
+            identificarAplicativoTrabalho(
+                pacoteLimpo
+            )
+
+        if (
+            nomeReconhecido == null
+        ) {
+
+            val tinhaAplicativo =
+                pacoteAplicativoAtual != null
+
+            pacoteAplicativoAtual =
+                null
+
+            nomeAplicativoAtual =
+                null
+
+            if (
+                tinhaAplicativo
+            ) {
+
+                contextoVisualAtual =
+                    null
+
+                Log.d(
+                    "GARUPA_OLHOS_APP",
+                    "🚪 Saiu dos apps de trabalho | " +
+                            "contexto visual limpo"
+                )
+            }
+
+            return
+        }
+
+        val pacoteAnterior =
+            pacoteAplicativoAtual
+
+        if (
+            pacoteAnterior != null &&
+            pacoteAnterior != pacoteLimpo
+        ) {
+
+            contextoVisualAtual =
+                null
+
+            Log.d(
+                "GARUPA_OLHOS_APP",
+                "🔄 Troca de app | " +
+                        "$pacoteAnterior -> $pacoteLimpo | " +
+                        "contexto visual anterior limpo"
+            )
+        }
+
+        val mudouAplicativo =
+            pacoteAnterior !=
+                    pacoteLimpo
+
+        pacoteAplicativoAtual =
+            pacoteLimpo
+
+        nomeAplicativoAtual =
+            nomeReconhecido
+
+        if (
+            mudouAplicativo
+        ) {
+
+            Log.d(
+                "GARUPA_OLHOS_APP",
+                "📱 App de trabalho atual: " +
+                        "$nomeReconhecido | " +
+                        "pacote=$pacoteLimpo"
+            )
+        }
     }
 
     /*
@@ -90,11 +240,19 @@ class Olhos {
             return
         }
 
+        val nomeAplicativo =
+            nomeAplicativoAtual
+                ?: return
+
         val descricao =
             buildString {
 
                 appendLine(
                     "O Garupa está vendo a tela atual do celular."
+                )
+
+                appendLine(
+                    "Aplicativo em primeiro plano: $nomeAplicativo."
                 )
 
                 appendLine(
@@ -240,6 +398,34 @@ class Olhos {
      * =========================================================
      */
 
+    private fun identificarAplicativoTrabalho(
+        pacote: String
+    ): String? {
+
+        return when (
+            pacote
+        ) {
+
+            PACOTE_IFOOD ->
+                "iFood"
+
+            PACOTE_99FOOD ->
+                "99Food"
+
+            PACOTE_KEETA ->
+                "Keeta"
+
+            PACOTE_WAZE ->
+                "Waze"
+
+            PACOTE_MAPS ->
+                "Google Maps"
+
+            else ->
+                null
+        }
+    }
+
     private fun construirDescricaoOferta(
         oferta: OfertaTemporaria
     ): String {
@@ -264,6 +450,14 @@ class Olhos {
             appendLine(
                 "O Garupa está observando uma oferta de entrega na tela."
             )
+
+            nomeAplicativoAtual
+                ?.let { nomeAplicativo ->
+
+                    appendLine(
+                        "Aplicativo em primeiro plano: $nomeAplicativo."
+                    )
+                }
 
             /*
              * =================================================
