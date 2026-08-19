@@ -298,6 +298,26 @@ class LeitorTela(
                         return@addOnSuccessListener
                     }
 
+                    /*
+                     * =====================================================
+                     * VISÃO GERAL DA TELA
+                     * =====================================================
+                     *
+                     * Antes de decidir se a tela representa uma oferta,
+                     * publicamos nos Olhos o texto que o OCR está vendo.
+                     *
+                     * Assim, telas normais de iFood, Keeta, 99Food,
+                     * Maps e Waze continuam disponíveis como contexto
+                     * visual, sem disparar a análise de corrida.
+                     */
+                    Garupa
+                        .obterOlhos()
+                        .observarTela(
+                            linhasOcr.map { linha ->
+                                linha.texto
+                            }
+                        )
+
                     val deteccaoOferta =
                         detectorOferta.analisar(
                             linhasOcr

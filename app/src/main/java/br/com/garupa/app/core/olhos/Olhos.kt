@@ -14,12 +14,12 @@ class Olhos {
          * VALIDADE DA VISÃO
          * =====================================================
          *
-         * Enquanto uma oferta continua aparecendo na tela,
-         * o LeitorTela renova o contexto constantemente.
+         * Enquanto uma informação visual continua aparecendo
+         * na tela, o contexto é renovado constantemente.
          *
          * Se nenhuma atualização visual válida chegar durante
-         * este período, consideramos que aquela oferta já não
-         * está mais sendo vista pelo Garupa.
+         * este período, consideramos que aquilo já não está
+         * mais sendo visto pelo Garupa.
          */
         private const val VALIDADE_CONTEXTO_VISUAL_MS =
             10_000L
@@ -54,7 +54,78 @@ class Olhos {
 
     /*
      * =========================================================
-     * CONTEXTO VISUAL
+     * VISÃO GERAL DA TELA
+     * =========================================================
+     *
+     * Esta função representa os "olhos abertos" do Garupa.
+     *
+     * Ela recebe os textos que o OCR conseguiu enxergar na
+     * tela atual, mesmo quando a tela NÃO representa uma oferta.
+     *
+     * Isso permite que o Garupa tenha contexto visual geral
+     * de iFood, Keeta, 99Food, Maps, Waze etc.
+     *
+     * A análise especializada de oferta continua separada
+     * através de observarOferta().
+     */
+    fun observarTela(
+        linhas: List<String>
+    ) {
+
+        val linhasValidas =
+            linhas
+                .map { linha ->
+                    linha.trim()
+                }
+                .filter { linha ->
+                    linha.isNotBlank()
+                }
+                .distinct()
+                .take(40)
+
+        if (
+            linhasValidas.isEmpty()
+        ) {
+
+            return
+        }
+
+        val descricao =
+            buildString {
+
+                appendLine(
+                    "O Garupa está vendo a tela atual do celular."
+                )
+
+                appendLine(
+                    "Textos visíveis na tela:"
+                )
+
+                linhasValidas
+                    .forEach { linha ->
+
+                        appendLine(
+                            "- $linha"
+                        )
+                    }
+            }
+                .trim()
+
+        contextoVisualAtual =
+            ContextoVisualGarupa(
+                descricao = descricao
+            )
+
+        Log.d(
+            "GARUPA_OLHOS_TELA",
+            "👀 Tela geral atualizada | " +
+                    "linhas=${linhasValidas.size}"
+        )
+    }
+
+    /*
+     * =========================================================
+     * CONTEXTO VISUAL DE OFERTA
      * =========================================================
      */
 
