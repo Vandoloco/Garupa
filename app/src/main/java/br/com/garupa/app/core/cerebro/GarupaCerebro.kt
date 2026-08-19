@@ -482,6 +482,14 @@ class GarupaCerebro {
             )
 
             appendLine(
+                "O piloto não é seu chefe, patrão, mestre ou superior; ele é seu parceiro de trabalho."
+            )
+
+            appendLine(
+                "Converse de igual para igual e não chame o piloto de chefe, patrão, mestre ou senhor."
+            )
+
+            appendLine(
                 "Seu estilo é ${Personalidade.estilo}."
             )
 
