@@ -16,6 +16,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.core.content.ContextCompat
+import br.com.garupa.app.core.GarupaEstado
 
 class Ouvido(
     contexto: Context
@@ -850,10 +851,9 @@ class Ouvido(
                         "🧠 Você disse: $frase"
                     )
 
-                    aoReconhecerFala
-                        ?.invoke(
-                            frase
-                        )
+                    processarFalaReconhecida(
+                        frase
+                    )
                 }
 
                 agendarNovaEscuta(
@@ -890,6 +890,187 @@ class Ouvido(
             ) {
             }
         }
+    }
+
+    /*
+     * =========================================================
+     * MODO PAUSA DA INTERAÇÃO
+     * =========================================================
+     *
+     * "Garupa, pausa" coloca a interação em silêncio sem
+     * desligar o SpeechRecognizer.
+     *
+     * Enquanto pausado, frases comuns NÃO são encaminhadas
+     * ao cérebro/Gemini. O Ouvido continua ativo apenas para
+     * reconhecer um comando explícito de retorno.
+     *
+     * Para evitar que uma conversa com cliente ou restaurante
+     * reative o Garupa por acidente, os comandos exigem a
+     * palavra "Garupa".
+     */
+    private fun processarFalaReconhecida(
+        frase: String
+    ) {
+
+        val fraseNormalizada =
+            normalizarComando(
+                frase
+            )
+
+        if (
+            GarupaEstado.interacaoPausada
+        ) {
+
+            if (
+                ehComandoRetomar(
+                    fraseNormalizada
+                )
+            ) {
+
+                GarupaEstado.continuarInteracao()
+
+                Log.d(
+                    "GARUPA_MODO_PAUSA",
+                    "▶️ Interação retomada por comando de voz"
+                )
+
+                /*
+                 * O comando é encaminhado ao cérebro somente
+                 * depois de sair da pausa. Assim o Garupa pode
+                 * responder naturalmente que voltou.
+                 */
+                aoReconhecerFala
+                    ?.invoke(
+                        frase
+                    )
+
+            } else {
+
+                Log.d(
+                    "GARUPA_MODO_PAUSA",
+                    "🤫 Fala ignorada durante pausa"
+                )
+            }
+
+            return
+        }
+
+        if (
+            ehComandoPausar(
+                fraseNormalizada
+            )
+        ) {
+
+            GarupaEstado.pausarInteracao()
+
+            Log.d(
+                "GARUPA_MODO_PAUSA",
+                "⏸️ Interação pausada por comando de voz"
+            )
+
+            /*
+             * Não enviamos "Garupa, pausa" ao cérebro.
+             * O silêncio começa imediatamente e evita uma
+             * resposta desnecessária do Gemini.
+             */
+            return
+        }
+
+        aoReconhecerFala
+            ?.invoke(
+                frase
+            )
+    }
+
+    private fun ehComandoPausar(
+        fraseNormalizada: String
+    ): Boolean {
+
+        if (
+            !fraseNormalizada.contains(
+                "garupa"
+            )
+        ) {
+
+            return false
+        }
+
+        val comandos =
+            listOf(
+                "pausa",
+                "fica quieto",
+                "fica quieta",
+                "silencio",
+                "segura ai"
+            )
+
+        return comandos.any { comando ->
+            fraseNormalizada.contains(
+                comando
+            )
+        }
+    }
+
+    private fun ehComandoRetomar(
+        fraseNormalizada: String
+    ): Boolean {
+
+        /*
+         * Enquanto o Garupa está pausado, aceitamos comandos
+         * curtos de retorno mesmo sem a palavra "Garupa".
+         *
+         * Motivo prático:
+         * o SpeechRecognizer pode encerrar a frase depois de
+         * reconhecer apenas "Garupa", cortando "Garupa, volta".
+         *
+         * Fora do modo pausa, estas palavras continuam seguindo
+         * o fluxo normal de conversa e não alteram o estado.
+         */
+        val comandos =
+            listOf(
+                "volta",
+                "retorna",
+                "pode falar",
+                "pode voltar",
+                "continua",
+                "continuar"
+            )
+
+        return comandos.any { comando ->
+            fraseNormalizada.contains(
+                comando
+            )
+        }
+    }
+
+    private fun normalizarComando(
+        texto: String
+    ): String {
+
+        return java.text.Normalizer
+            .normalize(
+                texto.lowercase(),
+                java.text.Normalizer.Form.NFD
+            )
+            .replace(
+                Regex(
+                    "\\p{InCombiningDiacriticalMarks}+"
+                ),
+                ""
+            )
+            .replace(
+                Regex(
+                    "[^a-z0-9 ]"
+                ),
+                " "
+            )
+            .replace(
+                Regex(
+                    "\\s+"
+                ),
+                " "
+            )
+            .trim()
     }
 
     /*

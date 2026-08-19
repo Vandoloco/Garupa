@@ -4,6 +4,8 @@ object GarupaEstado {
 
     var analisandoPedidos = true
 
+    var interacaoPausada = false
+
     fun pausarAnalise() {
         analisandoPedidos = false
     }
@@ -12,4 +14,11 @@ object GarupaEstado {
         analisandoPedidos = true
     }
 
+    fun pausarInteracao() {
+        interacaoPausada = true
+    }
+
+    fun continuarInteracao() {
+        interacaoPausada = false
+    }
 }
