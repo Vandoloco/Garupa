@@ -837,10 +837,20 @@ class Ouvido(
                         )
                         .orEmpty()
 
+                val confiancas =
+                    results
+                        ?.getFloatArray(
+                            SpeechRecognizer.CONFIDENCE_SCORES
+                        )
+
                 val frase =
                     textos
                         .firstOrNull()
                         ?.trim()
+
+                val confiancaPrincipal =
+                    confiancas
+                        ?.firstOrNull()
 
                 if (
                     !frase.isNullOrBlank()
@@ -849,6 +859,28 @@ class Ouvido(
                     Log.d(
                         "GARUPA_OUVIDO",
                         "🧠 Você disse: $frase"
+                    )
+
+                    val confiancaFormatada =
+                        when {
+
+                            confiancaPrincipal == null ->
+                                "indisponível"
+
+                            confiancaPrincipal < 0f ->
+                                "indisponível"
+
+                            else ->
+                                "%.2f".format(
+                                    confiancaPrincipal
+                                )
+                        }
+
+                    Log.d(
+                        "GARUPA_CONFIANCA",
+                        "🎯 Frase=\"$frase\" | " +
+                                "confianca=$confiancaFormatada | " +
+                                "alternativas=${textos.size}"
                     )
 
                     processarFalaReconhecida(
