@@ -12,7 +12,7 @@ data class ResultadoAvaliacao(
 class AvaliadorOferta {
 
     companion object {
-        const val VALOR_MINIMO_POR_KM = 1.60
+        const val VALOR_MINIMO_POR_KM = 1.20
     }
 
     fun avaliar(

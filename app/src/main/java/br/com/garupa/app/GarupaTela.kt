@@ -8,18 +8,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import br.com.garupa.app.core.GarupaEstado
 import br.com.garupa.app.ui.theme.GarupaTheme
 
 @Composable
 fun GarupaTela(
-    modifier: Modifier = Modifier,
-    mensagem: String = "🤖 Garupa: Pronto para rodar!"
+    modifier: Modifier = Modifier
 ) {
+
+    val estadoOperacional by
+    GarupaEstado
+        .estadoOperacional
+        .collectAsState()
 
     Column(
         modifier = modifier
@@ -34,16 +41,23 @@ fun GarupaTela(
             fontSize = 32.sp
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(
+            modifier =
+                Modifier.height(16.dp)
+        )
 
         Text(
             text = "Seu copiloto inteligente"
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(
+            modifier =
+                Modifier.height(24.dp)
+        )
 
         Text(
-            text = mensagem,
+            text =
+                estadoOperacional.textoTela,
             fontSize = 18.sp
         )
     }
@@ -52,6 +66,7 @@ fun GarupaTela(
 @Preview(showBackground = true)
 @Composable
 fun GarupaTelaPreview() {
+
     GarupaTheme {
         GarupaTela()
     }

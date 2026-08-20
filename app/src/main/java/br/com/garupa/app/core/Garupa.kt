@@ -8,6 +8,7 @@ import br.com.garupa.app.core.cerebro.GarupaCerebro
 import br.com.garupa.app.core.cerebro.MotorInteligenciaGemini
 import br.com.garupa.app.core.cerebro.MotorInteligenciaLocal
 import br.com.garupa.app.core.memoria.Memoria
+import br.com.garupa.app.core.monitoramento.MonitorGarupa
 import br.com.garupa.app.core.olhos.Olhos
 import br.com.garupa.app.core.ouvido.Ouvido
 import br.com.garupa.app.core.voz.Voz
@@ -47,6 +48,10 @@ object Garupa {
             MotorInteligenciaGemini? =
         null
 
+    private var monitor:
+            MonitorGarupa? =
+        null
+
     @Volatile
     private var processandoFala =
         false
@@ -73,8 +78,25 @@ object Garupa {
         contexto: Context
     ) {
 
+        GarupaEstado.atualizarEstado(
+            EstadoOperacionalGarupa.INICIANDO
+        )
+
         val contextoAplicacao =
             contexto.applicationContext
+
+        if (
+            monitor == null
+        ) {
+
+            monitor =
+                MonitorGarupa(
+                    contextoAplicacao
+                )
+
+            monitor
+                ?.iniciarSessao()
+        }
 
         Log.d(
             "GARUPA",
@@ -226,6 +248,10 @@ object Garupa {
         Log.d(
             "GARUPA",
             "✅ Garupa pronto para rodar!"
+        )
+
+        GarupaEstado.atualizarEstado(
+            EstadoOperacionalGarupa.PRONTO
         )
     }
 
@@ -771,5 +797,11 @@ object Garupa {
             MotorInteligenciaGemini? {
 
         return motorInteligenciaGemini
+    }
+
+    fun obterMonitor():
+            MonitorGarupa? {
+
+        return monitor
     }
 }

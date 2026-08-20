@@ -4,11 +4,14 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import br.com.garupa.app.core.Garupa
+import br.com.garupa.app.core.GarupaEstado
+import br.com.garupa.app.core.EstadoOperacionalGarupa
 import br.com.garupa.app.core.decisao.AvaliadorOferta
 import br.com.garupa.app.core.geocodificacao.CoordenadaEndereco
 import br.com.garupa.app.core.geocodificacao.GeocodificadorEndereco
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
 import br.com.garupa.app.core.memoria.OfertaTemporaria
+import br.com.garupa.app.core.monitoramento.NivelRegistroGarupa
 import br.com.garupa.app.core.oferta.DetectorOferta
 import br.com.garupa.app.core.oferta.ExtratorOferta
 import br.com.garupa.app.core.oferta.ParadaOferta
@@ -147,6 +150,17 @@ class LeitorTela(
      */
     private var identidadeReservada: IdentidadeOfertaGlobal? =
         null
+
+    /*
+     * Evita que a MESMA oferta, depois de concluída,
+     * volte a alternar o estado visual entre:
+     *
+     * PRONTO -> OFERTA_DETECTADA -> CALCULANDO_ROTA -> PRONTO
+     *
+     * enquanto continua parada na tela.
+     */
+    private var ofertaAtualJaConcluidaNoEstado =
+        false
 
     /*
      * O OCR do ML Kit é assíncrono.
@@ -325,12 +339,38 @@ class LeitorTela(
 
                     if (!deteccaoOferta.pareceOferta) {
 
+                        ofertaAtualJaConcluidaNoEstado =
+                            false
+
+                        if (
+                            !geocodificacaoEmAndamento &&
+                            !rotaEmAndamento &&
+                            !GarupaEstado.interacaoPausada
+                        ) {
+
+                            GarupaEstado.atualizarEstado(
+                                EstadoOperacionalGarupa.PRONTO
+                            )
+                        }
+
                         Log.d(
                             "GARUPA_LEITOR",
                             "🛑 Tela ignorada: não atingiu confiança de oferta"
                         )
 
                         return@addOnSuccessListener
+                    }
+
+                    if (
+                        !geocodificacaoEmAndamento &&
+                        !rotaEmAndamento &&
+                        !GarupaEstado.interacaoPausada &&
+                        !ofertaAtualJaConcluidaNoEstado
+                    ) {
+
+                        GarupaEstado.atualizarEstado(
+                            EstadoOperacionalGarupa.OFERTA_DETECTADA
+                        )
                     }
 
                     /*
@@ -664,6 +704,9 @@ class LeitorTela(
             ofertaTemporaria.assinaturaBase =
                 novaAssinaturaBase
 
+            ofertaAtualJaConcluidaNoEstado =
+                false
+
             zerarCandidata()
 
             Log.d(
@@ -705,6 +748,9 @@ class LeitorTela(
             )
 
             limparOfertaAtual()
+
+            ofertaAtualJaConcluidaNoEstado =
+                false
 
             ofertaTemporaria.assinaturaBase =
                 novaAssinaturaBase
@@ -1721,6 +1767,16 @@ class LeitorTela(
         geocodificacaoEmAndamento =
             true
 
+        if (
+            !GarupaEstado.interacaoPausada &&
+            !ofertaAtualJaConcluidaNoEstado
+        ) {
+
+            GarupaEstado.atualizarEstado(
+                EstadoOperacionalGarupa.CALCULANDO_ROTA
+            )
+        }
+
         Log.d(
             "GARUPA_DEDUP",
             "🔒 Oferta multiparada reservada globalmente"
@@ -1957,9 +2013,51 @@ class LeitorTela(
                                 avaliacao.sugestao
                     )
 
+                    val decisaoMonitor =
+                        if (
+                            avaliacao.sugestao.contains(
+                                "deixar passar",
+                                ignoreCase = true
+                            )
+                        ) {
+                            "DEIXAR_PASSAR"
+                        } else {
+                            "ACEITAR"
+                        }
+
+                    Garupa
+                        .obterMonitor()
+                        ?.registrar(
+                            nivel =
+                                NivelRegistroGarupa.INFO,
+
+                            categoria =
+                                "OFERTA_DECISAO",
+
+                            mensagem =
+                                "valor=%.2f | ".format(avaliacao.valorOferta) +
+                                        "distanciaReal=%.2f | ".format(avaliacao.distanciaTotalKm) +
+                                        "valorKm=%.2f | ".format(avaliacao.valorPorKm) +
+                                        "decisao=$decisaoMonitor | " +
+                                        "paradas=${paradas.size} | " +
+                                        "pedidos=${ofertaTemporaria.quantidadePedidos}"
+                        )
+
                     anunciarDecisaoPorVoz(
                         avaliacao.sugestao
                     )
+
+                    ofertaAtualJaConcluidaNoEstado =
+                        true
+
+                    if (
+                        !GarupaEstado.interacaoPausada
+                    ) {
+
+                        GarupaEstado.atualizarEstado(
+                            EstadoOperacionalGarupa.PRONTO
+                        )
+                    }
 
                     Log.d(
                         "GARUPA_MEMORIA",
@@ -2081,6 +2179,15 @@ class LeitorTela(
             null
 
         liberarReservaGlobal()
+
+        if (
+            !GarupaEstado.interacaoPausada
+        ) {
+
+            GarupaEstado.atualizarEstado(
+                EstadoOperacionalGarupa.PRONTO
+            )
+        }
 
         Log.d(
             "GARUPA_DEDUP",

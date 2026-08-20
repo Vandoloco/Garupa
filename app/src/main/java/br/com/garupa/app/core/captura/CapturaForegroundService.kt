@@ -21,12 +21,30 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import br.com.garupa.app.core.Garupa
+import br.com.garupa.app.core.GarupaEstado
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import br.com.garupa.app.core.leitura.LeitorTela
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
 import java.io.File
 import java.io.FileOutputStream
 
 class CapturaForegroundService : Service() {
+
+    private val escopoServico =
+        CoroutineScope(
+            SupervisorJob() +
+                    Dispatchers.Main.immediate
+        )
+
+    private var trabalhoEstado:
+            Job? =
+        null
 
     companion object {
 
@@ -137,6 +155,8 @@ class CapturaForegroundService : Service() {
          * qualquer recurso sensível de background.
          */
         iniciarForeground()
+
+        observarEstadoGarupa()
 
         /*
          * Mantém o processamento ativo mesmo com a tela
@@ -758,24 +778,12 @@ class CapturaForegroundService : Service() {
     private fun iniciarForeground() {
 
         val notificacao =
-            NotificationCompat
-                .Builder(
-                    this,
-                    CHANNEL_ID
-                )
-                .setContentTitle(
-                    "Garupa ativo"
-                )
-                .setContentText(
-                    "Ouvindo, analisando ofertas e acompanhando sua posição"
-                )
-                .setSmallIcon(
-                    android.R.drawable.ic_menu_mylocation
-                )
-                .setOngoing(
-                    true
-                )
-                .build()
+            criarNotificacao(
+                GarupaEstado
+                    .estadoOperacional
+                    .value
+                    .textoTela
+            )
 
         if (
             Build.VERSION.SDK_INT >=
@@ -832,6 +840,83 @@ class CapturaForegroundService : Service() {
             startForeground(
                 NOTIFICATION_ID,
                 notificacao
+            )
+        }
+    }
+
+    private fun criarNotificacao(
+        textoEstado: String
+    ) =
+        NotificationCompat
+            .Builder(
+                this,
+                CHANNEL_ID
+            )
+            .setContentTitle(
+                "Garupa ativo"
+            )
+            .setContentText(
+                textoEstado
+            )
+            .setSmallIcon(
+                android.R.drawable.ic_menu_mylocation
+            )
+            .setOngoing(
+                true
+            )
+            .setOnlyAlertOnce(
+                true
+            )
+            .build()
+
+    private fun observarEstadoGarupa() {
+
+        trabalhoEstado
+            ?.cancel()
+
+        trabalhoEstado =
+            escopoServico.launch {
+
+                GarupaEstado
+                    .estadoOperacional
+                    .collectLatest { estado ->
+
+                        atualizarNotificacaoEstado(
+                            estado.textoTela
+                        )
+                    }
+            }
+    }
+
+    private fun atualizarNotificacaoEstado(
+        textoEstado: String
+    ) {
+
+        try {
+
+            val manager =
+                getSystemService(
+                    NotificationManager::class.java
+                )
+
+            manager.notify(
+                NOTIFICATION_ID,
+                criarNotificacao(
+                    textoEstado
+                )
+            )
+
+            Log.d(
+                "GARUPA_NOTIFICACAO",
+                "📌 Estado na notificação: $textoEstado"
+            )
+
+        } catch (erro: Exception) {
+
+            Log.e(
+                "GARUPA_NOTIFICACAO",
+                "❌ Erro ao atualizar estado da notificação",
+                erro
             )
         }
     }
@@ -896,6 +981,11 @@ class CapturaForegroundService : Service() {
 
             handlerThread.quitSafely()
         }
+
+        trabalhoEstado
+            ?.cancel()
+
+        escopoServico.cancel()
 
         Log.d(
             "GARUPA_CAPTURA",

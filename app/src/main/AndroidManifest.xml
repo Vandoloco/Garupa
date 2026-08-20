@@ -8,6 +8,9 @@
     <!-- Microfone -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Notificações Android 13+ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Controle da rota de áudio -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 

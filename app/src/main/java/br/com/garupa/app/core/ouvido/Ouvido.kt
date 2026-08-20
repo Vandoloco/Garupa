@@ -16,7 +16,9 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.core.content.ContextCompat
+import br.com.garupa.app.core.Garupa
 import br.com.garupa.app.core.GarupaEstado
+import br.com.garupa.app.core.monitoramento.NivelRegistroGarupa
 
 class Ouvido(
     contexto: Context
@@ -59,6 +61,21 @@ class Ouvido(
     private var aoReconhecerFala:
             ((String) -> Unit)? =
         null
+
+    private fun registrarMonitor(
+        nivel: NivelRegistroGarupa,
+        categoria: String,
+        mensagem: String
+    ) {
+
+        Garupa
+            .obterMonitor()
+            ?.registrar(
+                nivel = nivel,
+                categoria = categoria,
+                mensagem = mensagem
+            )
+    }
 
     /*
      * =========================================================
@@ -165,6 +182,12 @@ class Ouvido(
                 "❌ Reconhecimento de voz indisponível neste aparelho"
             )
 
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.ERRO,
+                categoria = "OUVIDO",
+                mensagem = "Reconhecimento de voz indisponível"
+            )
+
             return
         }
 
@@ -189,6 +212,12 @@ class Ouvido(
         Log.d(
             "GARUPA_OUVIDO",
             "🎤 Ouvido inicializado"
+        )
+
+        registrarMonitor(
+            nivel = NivelRegistroGarupa.INFO,
+            categoria = "OUVIDO",
+            mensagem = "Ouvido inicializado"
         )
     }
 
@@ -225,6 +254,12 @@ class Ouvido(
                 Log.e(
                     "GARUPA_OUVIDO",
                     "❌ Não foi possível iniciar reconhecimento"
+                )
+
+                registrarMonitor(
+                    nivel = NivelRegistroGarupa.ERRO,
+                    categoria = "OUVIDO",
+                    mensagem = "Não foi possível iniciar reconhecimento"
                 )
 
                 return@post
@@ -284,6 +319,12 @@ class Ouvido(
                 "GARUPA_OUVIDO",
                 "🔇 Escuta pausada"
             )
+
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.INFO,
+                categoria = "OUVIDO",
+                mensagem = "Escuta pausada"
+            )
         }
     }
 
@@ -331,6 +372,12 @@ class Ouvido(
                     Log.d(
                         "GARUPA_BLUETOOTH",
                         "⚠️ BLUETOOTH_CONNECT ainda não autorizado"
+                    )
+
+                    registrarMonitor(
+                        nivel = NivelRegistroGarupa.AVISO,
+                        categoria = "BLUETOOTH",
+                        mensagem = "BLUETOOTH_CONNECT não autorizado"
                     )
 
                     return
@@ -401,11 +448,23 @@ class Ouvido(
                                     "id=${intercom.id}"
                         )
 
+                        registrarMonitor(
+                            nivel = NivelRegistroGarupa.INFO,
+                            categoria = "BLUETOOTH",
+                            mensagem = "Intercom selecionado | tipo=${intercom.type} | id=${intercom.id}"
+                        )
+
                     } else {
 
                         Log.d(
                             "GARUPA_BLUETOOTH",
                             "⚠️ Android recusou seleção do intercom"
+                        )
+
+                        registrarMonitor(
+                            nivel = NivelRegistroGarupa.AVISO,
+                            categoria = "BLUETOOTH",
+                            mensagem = "Android recusou seleção do intercom"
                         )
                     }
 
@@ -448,6 +507,12 @@ class Ouvido(
                 erro
             )
 
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.ERRO,
+                categoria = "BLUETOOTH",
+                mensagem = "Sem permissão para controlar Bluetooth | ${erro.message.orEmpty()}"
+            )
+
         } catch (
             erro: Exception
         ) {
@@ -456,6 +521,12 @@ class Ouvido(
                 "GARUPA_BLUETOOTH",
                 "❌ Erro ao selecionar intercom",
                 erro
+            )
+
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.ERRO,
+                categoria = "BLUETOOTH",
+                mensagem = "Erro ao selecionar intercom | ${erro.message.orEmpty()}"
             )
         }
     }
@@ -698,6 +769,12 @@ class Ouvido(
                 erro
             )
 
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.ERRO,
+                categoria = "OUVIDO",
+                mensagem = "Erro ao iniciar escuta | ${erro.message.orEmpty()}"
+            )
+
             agendarNovaEscuta(
                 1500L
             )
@@ -781,6 +858,12 @@ class Ouvido(
                         "GARUPA_OUVIDO",
                         "⚠️ Reconhecimento retornou código=$error"
                     )
+
+                    registrarMonitor(
+                        nivel = NivelRegistroGarupa.AVISO,
+                        categoria = "OUVIDO",
+                        mensagem = "Reconhecimento retornou código=$error"
+                    )
                 }
 
                 if (
@@ -794,6 +877,12 @@ class Ouvido(
                     Log.e(
                         "GARUPA_OUVIDO",
                         "❌ Sem permissão para usar o microfone"
+                    )
+
+                    registrarMonitor(
+                        nivel = NivelRegistroGarupa.CRITICO,
+                        categoria = "OUVIDO",
+                        mensagem = "Sem permissão para usar o microfone"
                     )
 
                     return
@@ -883,6 +972,12 @@ class Ouvido(
                                 "alternativas=${textos.size}"
                     )
 
+                    registrarMonitor(
+                        nivel = NivelRegistroGarupa.INFO,
+                        categoria = "VOZ_RECONHECIDA",
+                        mensagem = "frase=\"$frase\" | confianca=$confiancaFormatada | alternativas=${textos.size}"
+                    )
+
                     processarFalaReconhecida(
                         frase
                     )
@@ -966,6 +1061,12 @@ class Ouvido(
                     "▶️ Interação retomada por comando de voz"
                 )
 
+                registrarMonitor(
+                    nivel = NivelRegistroGarupa.INFO,
+                    categoria = "MODO_PAUSA",
+                    mensagem = "Interação retomada por comando de voz | frase=\"$frase\""
+                )
+
                 /*
                  * O comando é encaminhado ao cérebro somente
                  * depois de sair da pausa. Assim o Garupa pode
@@ -998,6 +1099,12 @@ class Ouvido(
             Log.d(
                 "GARUPA_MODO_PAUSA",
                 "⏸️ Interação pausada por comando de voz"
+            )
+
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.INFO,
+                categoria = "MODO_PAUSA",
+                mensagem = "Interação pausada por comando de voz | frase=\"$frase\""
             )
 
             /*
@@ -1256,6 +1363,12 @@ class Ouvido(
             Log.d(
                 "GARUPA_OUVIDO",
                 "🎤 Ouvido encerrado"
+            )
+
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.INFO,
+                categoria = "OUVIDO",
+                mensagem = "Ouvido encerrado"
             )
         }
     }

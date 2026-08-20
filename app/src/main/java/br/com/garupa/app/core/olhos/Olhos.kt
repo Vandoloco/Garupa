@@ -1,6 +1,8 @@
 package br.com.garupa.app.core.olhos
 
 import android.util.Log
+import br.com.garupa.app.core.Garupa
+import br.com.garupa.app.core.monitoramento.NivelRegistroGarupa
 import br.com.garupa.app.core.analise.Pedido
 import br.com.garupa.app.core.memoria.OfertaTemporaria
 import br.com.garupa.app.core.parser.TipoParadaKeeta
@@ -68,11 +70,32 @@ class Olhos {
             String? =
         null
 
+    private fun registrarMonitor(
+        nivel: NivelRegistroGarupa,
+        categoria: String,
+        mensagem: String
+    ) {
+
+        Garupa
+            .obterMonitor()
+            ?.registrar(
+                nivel = nivel,
+                categoria = categoria,
+                mensagem = mensagem
+            )
+    }
+
     fun iniciar() {
 
         Log.d(
             "GARUPA",
             "👀 Olhos prontos"
+        )
+
+        registrarMonitor(
+            nivel = NivelRegistroGarupa.INFO,
+            categoria = "OLHOS",
+            mensagem = "Olhos prontos"
         )
     }
 
@@ -155,6 +178,12 @@ class Olhos {
                     "🚪 Saiu dos apps de trabalho | " +
                             "contexto visual limpo"
                 )
+
+                registrarMonitor(
+                    nivel = NivelRegistroGarupa.INFO,
+                    categoria = "OLHOS_APP",
+                    mensagem = "Saiu dos apps de trabalho | contexto visual limpo"
+                )
             }
 
             return
@@ -177,6 +206,12 @@ class Olhos {
                         "$pacoteAnterior -> $pacoteLimpo | " +
                         "contexto visual anterior limpo"
             )
+
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.INFO,
+                categoria = "OLHOS_APP",
+                mensagem = "Troca de app | $pacoteAnterior -> $pacoteLimpo | contexto visual anterior limpo"
+            )
         }
 
         val mudouAplicativo =
@@ -198,6 +233,12 @@ class Olhos {
                 "📱 App de trabalho atual: " +
                         "$nomeReconhecido | " +
                         "pacote=$pacoteLimpo"
+            )
+
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.INFO,
+                categoria = "OLHOS_APP",
+                mensagem = "App de trabalho atual=$nomeReconhecido | pacote=$pacoteLimpo"
             )
         }
     }
@@ -279,6 +320,12 @@ class Olhos {
             "👀 Tela geral atualizada | " +
                     "linhas=${linhasValidas.size}"
         )
+
+        registrarMonitor(
+            nivel = NivelRegistroGarupa.INFO,
+            categoria = "OLHOS_TELA",
+            mensagem = "Tela geral atualizada | app=$nomeAplicativo | linhas=${linhasValidas.size}"
+        )
     }
 
     /*
@@ -312,6 +359,12 @@ class Olhos {
             "GARUPA_OLHOS_CONTEXTO",
             "👀 Contexto visual atualizado:\n$descricao"
         )
+
+        registrarMonitor(
+            nivel = NivelRegistroGarupa.INFO,
+            categoria = "OLHOS_OFERTA",
+            mensagem = "Contexto de oferta atualizado | valor=${oferta.valor} | distanciaTela=${oferta.distanciaTotal} | paradas=${oferta.paradas.size} | completa=${oferta.completa} | analisada=${oferta.analisada}"
+        )
     }
 
     /*
@@ -342,6 +395,12 @@ class Olhos {
                 "GARUPA_OLHOS_CONTEXTO",
                 "⌛ Contexto visual expirou | " +
                         "idade=${contexto.idadeMs()}ms"
+            )
+
+            registrarMonitor(
+                nivel = NivelRegistroGarupa.AVISO,
+                categoria = "OLHOS_CONTEXTO",
+                mensagem = "Contexto visual expirou | idade=${contexto.idadeMs()}ms"
             )
 
             contextoVisualAtual =
@@ -389,6 +448,12 @@ class Olhos {
         Log.d(
             "GARUPA_OLHOS_CONTEXTO",
             "🧹 Contexto visual limpo"
+        )
+
+        registrarMonitor(
+            nivel = NivelRegistroGarupa.INFO,
+            categoria = "OLHOS_CONTEXTO",
+            mensagem = "Contexto visual limpo"
         )
     }
 

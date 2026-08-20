@@ -1,10 +1,14 @@
 package br.com.garupa.app
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -16,9 +20,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import br.com.garupa.app.core.Garupa
+import br.com.garupa.app.core.acessibilidade.GarupaAccessibilityService
 import br.com.garupa.app.core.captura.CapturaForegroundService
 import br.com.garupa.app.core.captura.CapturaTela
 import br.com.garupa.app.core.localizacao.GerenciadorLocalizacao
+import br.com.garupa.app.core.monitoramento.NivelRegistroGarupa
 import br.com.garupa.app.ui.theme.GarupaTheme
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
@@ -30,6 +36,32 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var gerenciadorLocalizacao:
             GerenciadorLocalizacao
+
+    /*
+     * =========================================================
+     * NOTIFICAÇÕES
+     * =========================================================
+     */
+
+    private val pedidoNotificacoes =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { concedida ->
+
+            if (concedida) {
+                Log.d(
+                    "GARUPA_NOTIFICACAO",
+                    "🔔 Permissão de notificações concedida"
+                )
+            } else {
+                Log.d(
+                    "GARUPA_NOTIFICACAO",
+                    "⚠️ Permissão de notificações não concedida"
+                )
+            }
+
+            verificarPermissaoBluetooth()
+        }
 
     /*
      * =========================================================
@@ -135,8 +167,26 @@ class MainActivity : ComponentActivity() {
                     "❌ Permissão de localização não concedida"
                 )
 
-                iniciarPedidoCaptura()
+                verificarAcessibilidade()
             }
+        }
+
+    /*
+     * =========================================================
+     * ACESSIBILIDADE
+     * =========================================================
+     */
+
+    private val pedidoAcessibilidade =
+        registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) {
+
+            /*
+             * Ao voltar das Configurações, verificamos novamente.
+             * O Android exige que o próprio usuário ative o serviço.
+             */
+            verificarAcessibilidade()
         }
 
     /*
@@ -196,12 +246,38 @@ class MainActivity : ComponentActivity() {
                     "📸 Captura contínua autorizada e serviço iniciado"
                 )
 
+                Garupa
+                    .obterMonitor()
+                    ?.registrar(
+                        nivel =
+                            NivelRegistroGarupa.INFO,
+
+                        categoria =
+                            "CAPTURA",
+
+                        mensagem =
+                            "Captura contínua autorizada e serviço iniciado"
+                    )
+
             } else {
 
                 Log.d(
                     "GARUPA",
                     "📸 Captura de tela não autorizada"
                 )
+
+                Garupa
+                    .obterMonitor()
+                    ?.registrar(
+                        nivel =
+                            NivelRegistroGarupa.AVISO,
+
+                        categoria =
+                            "CAPTURA",
+
+                        mensagem =
+                            "Captura de tela não autorizada"
+                    )
             }
         }
 
@@ -284,7 +360,46 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        verificarPermissaoBluetooth()
+        verificarPermissaoNotificacoes()
+    }
+
+    /*
+     * =========================================================
+     * NOTIFICAÇÕES
+     * =========================================================
+     */
+
+    private fun verificarPermissaoNotificacoes() {
+
+        if (
+            Build.VERSION.SDK_INT <
+            Build.VERSION_CODES.TIRAMISU
+        ) {
+            verificarPermissaoBluetooth()
+            return
+        }
+
+        val permissao =
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+
+        if (
+            permissao ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.d(
+                "GARUPA_NOTIFICACAO",
+                "🔔 Notificações já autorizadas"
+            )
+
+            verificarPermissaoBluetooth()
+        } else {
+            pedidoNotificacoes.launch(
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        }
     }
 
     /*
@@ -431,7 +546,107 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                iniciarPedidoCaptura()
+                verificarAcessibilidade()
+            }
+    }
+
+    /*
+     * =========================================================
+     * ACESSIBILIDADE
+     * =========================================================
+     */
+
+    private fun verificarAcessibilidade() {
+
+        if (
+            acessibilidadeGarupaAtiva()
+        ) {
+
+            Log.d(
+                "GARUPA_ACESSIBILIDADE",
+                "👁️ Acessibilidade do Garupa já está ativa"
+            )
+
+            Garupa
+                .obterMonitor()
+                ?.registrar(
+                    nivel =
+                        NivelRegistroGarupa.INFO,
+
+                    categoria =
+                        "ACESSIBILIDADE",
+
+                    mensagem =
+                        "Serviço de acessibilidade ativo"
+                )
+
+            iniciarPedidoCaptura()
+
+            return
+        }
+
+        Log.d(
+            "GARUPA_ACESSIBILIDADE",
+            "⚠️ Acessibilidade do Garupa está desativada"
+        )
+
+        Garupa
+            .obterMonitor()
+            ?.registrar(
+                nivel =
+                    NivelRegistroGarupa.AVISO,
+
+                categoria =
+                    "ACESSIBILIDADE",
+
+                mensagem =
+                    "Serviço de acessibilidade desativado"
+            )
+
+        val intent =
+            Intent(
+                Settings.ACTION_ACCESSIBILITY_SETTINGS
+            )
+
+        pedidoAcessibilidade.launch(
+            intent
+        )
+    }
+
+    private fun acessibilidadeGarupaAtiva():
+            Boolean {
+
+        val componenteGarupa =
+            ComponentName(
+                this,
+                GarupaAccessibilityService::class.java
+            )
+
+        val accessibilityManager =
+            getSystemService(
+                AccessibilityManager::class.java
+            )
+
+        val servicosAtivos =
+            accessibilityManager
+                .getEnabledAccessibilityServiceList(
+                    AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+                )
+
+        return servicosAtivos
+            .any { servico ->
+
+                val infoServico =
+                    servico.resolveInfo.serviceInfo
+
+                val componente =
+                    ComponentName(
+                        infoServico.packageName,
+                        infoServico.name
+                    )
+
+                componente ==
+                        componenteGarupa
             }
     }
 
