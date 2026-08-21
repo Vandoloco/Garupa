@@ -1948,7 +1948,28 @@ class LeitorTela(
                             "❌ Não foi possível calcular rota multiparada"
                         )
 
-                        liberarAnaliseComErro()
+                        /*
+                         * O CalculadorRota já fez as tentativas
+                         * controladas de rede.
+                         *
+                         * Se ainda falhou, NÃO liberamos imediatamente
+                         * esta mesma oferta para uma nova análise.
+                         *
+                         * Caso contrário, enquanto a oferta continuar
+                         * parada na tela, cada novo frame iniciaria:
+                         *
+                         * OFERTA_DETECTADA
+                         * -> CALCULANDO_ROTA
+                         * -> falha
+                         * -> PRONTO
+                         * -> OFERTA_DETECTADA...
+                         *
+                         * Marcamos esta identidade como terminal para a
+                         * deduplicação global. Uma oferta diferente
+                         * continua podendo ser analisada normalmente.
+                         */
+                        bloquearOfertaAposFalhaRota()
+
                         return@calcularMultiplaParada
                     }
 
@@ -2137,6 +2158,92 @@ class LeitorTela(
      * Em caso de falha liberamos a reserva
      * para permitir outra tentativa posterior.
      */
+    /*
+     * =========================================================
+     * BLOQUEIO APÓS FALHA FINAL DE ROTA
+     * =========================================================
+     *
+     * O CalculadorRota já possui retry controlado.
+     *
+     * Quando todas as tentativas falham, esta oferta não deve
+     * ser liberada imediatamente para o próximo frame.
+     *
+     * Reaproveitamos a mesma janela de deduplicação global usada
+     * por ofertas concluídas. Isso impede o loop da MESMA oferta
+     * ainda visível, mas não bloqueia uma identidade diferente.
+     */
+    private fun bloquearOfertaAposFalhaRota() {
+
+        val identidade =
+            identidadeReservada
+
+        synchronized(
+            travaGlobal
+        ) {
+
+            if (
+                identidade != null
+            ) {
+
+                ultimaIdentidadeGlobalConcluida =
+                    identidade
+
+                horarioUltimaConclusaoGlobal =
+                    System.currentTimeMillis()
+            }
+
+            if (
+                identidade != null &&
+                identidadeGlobalEmAnalise != null &&
+                identidadesSaoMesmaOferta(
+                    identidadeGlobalEmAnalise!!,
+                    identidade
+                )
+            ) {
+
+                identidadeGlobalEmAnalise =
+                    null
+            }
+        }
+
+        identidadeReservada =
+            null
+
+        geocodificacaoEmAndamento =
+            false
+
+        rotaEmAndamento =
+            false
+
+        coordenadaB =
+            null
+
+        coordenadaC =
+            null
+
+        /*
+         * Também bloqueia a oscilação visual do estado enquanto
+         * a mesma oferta continuar na tela.
+         */
+        ofertaAtualJaConcluidaNoEstado =
+            true
+
+        if (
+            !GarupaEstado.interacaoPausada
+        ) {
+
+            GarupaEstado.atualizarEstado(
+                EstadoOperacionalGarupa.PRONTO
+            )
+        }
+
+        Log.d(
+            "GARUPA_DEDUP",
+            "🛑 Oferta bloqueada após falha final de rota | " +
+                    "mesma identidade não será reprocessada nesta janela"
+        )
+    }
+
     private fun liberarReservaGlobal() {
 
         val identidade =
